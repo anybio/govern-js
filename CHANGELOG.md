@@ -2,6 +2,10 @@
 
 All notable changes to `@anybio/govern` are recorded here. The format follows Keep a Changelog; versions follow Semantic Versioning. Until 1.0.0, a minor version may change the public surface.
 
+## 0.2.2
+
+No change to the SDK. Built and published from github.com/anybio/govern-js with a provenance statement.
+
 ## 0.2.1
 
 First public release.

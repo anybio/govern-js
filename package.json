@@ -1,6 +1,6 @@
 {
   "name": "@anybio/govern",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "Apache-2.0",
   "description": "AnyBio Govern SDK for JavaScript and TypeScript: one server-side call between the text your AI produced and the moment it reaches a patient. Evaluate, allow, hold, block; observe first, then enforce.",
   "keywords": [
@@ -21,6 +21,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anybio/govern-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anybio/govern-js/issues"
   },
   "type": "module",
   "sideEffects": false,
