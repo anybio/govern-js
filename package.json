@@ -1,0 +1,126 @@
+{
+  "name": "@anybio/govern",
+  "version": "0.2.1",
+  "license": "Apache-2.0",
+  "description": "AnyBio Govern SDK for JavaScript and TypeScript: one server-side call between the text your AI produced and the moment it reaches a patient. Evaluate, allow, hold, block; observe first, then enforce.",
+  "keywords": [
+    "anybio",
+    "govern",
+    "healthcare",
+    "ai-safety",
+    "compliance-gate",
+    "vercel-ai-sdk",
+    "langchain"
+  ],
+  "homepage": "https://developer.anybio.io",
+  "author": {
+    "name": "AnyBio Engineering",
+    "email": "platform@anybio.io",
+    "url": "https://developer.anybio.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anybio/govern-js.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.cts",
+  "typesVersions": {
+    "*": {
+      "vercel-ai": ["./dist/vercel-ai.d.cts"],
+      "langchain": ["./dist/langchain.d.cts"]
+    }
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./vercel-ai": {
+      "import": {
+        "types": "./dist/vercel-ai.d.ts",
+        "default": "./dist/vercel-ai.js"
+      },
+      "require": {
+        "types": "./dist/vercel-ai.d.cts",
+        "default": "./dist/vercel-ai.cjs"
+      }
+    },
+    "./langchain": {
+      "import": {
+        "types": "./dist/langchain.d.ts",
+        "default": "./dist/langchain.js"
+      },
+      "require": {
+        "types": "./dist/langchain.d.cts",
+        "default": "./dist/langchain.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "govern": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "spec/openapi.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate:types": "node scripts/generate-types.mjs",
+    "spec:extract": "node scripts/extract-govern-openapi.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm check:package",
+    "prepublishOnly": "pnpm check"
+  },
+  "peerDependencies": {
+    "@langchain/core": "^1.0.0",
+    "ai": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@langchain/core": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@langchain/core": "^1.2.11",
+    "@types/node": "^22.19.0",
+    "ai": "^7.0.105",
+    "eslint": "^9.39.5",
+    "openapi-typescript": "^7.13.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^4.1.11",
+    "zod": "^4.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

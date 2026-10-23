@@ -1,0 +1,24 @@
+node_modules/
+dist/
+coverage/
+.turbo/
+*.tgz
+.env
+.env.*
+!.env.example
+
+_anybio/
+
+# AI coding assistants: local config and instruction files
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/
+.codex/
+.gemini/
+GEMINI.md
+
+# example app build output
+examples/**/.next/
+examples/**/node_modules/

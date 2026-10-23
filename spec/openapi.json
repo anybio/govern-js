@@ -1,0 +1,3967 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AnyBio Govern API",
+    "version": "1.0.0",
+    "description": "The Govern surface of the AnyBio API. Generated from the AnyBio Govern API specification, 2026-09-26."
+  },
+  "servers": [
+    {
+      "url": "https://api.anybio.io"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Govern",
+      "description": "Run a third party's patient-facing AI through the communication compliance gate: applications, application keys, modes, decisions"
+    }
+  ],
+  "paths": {
+    "/api/v1/govern/applications": {
+      "get": {
+        "operationId": "list_applications",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApplicationDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Applications in the caller's organization and environment"
+          },
+          "403": {
+            "description": "Requires an organization admin session or an Admin developer key"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "tags": [
+          "Govern"
+        ]
+      },
+      "post": {
+        "operationId": "create_application",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateApplicationResponse"
+                }
+              }
+            },
+            "description": "Application created; the key secret appears only here"
+          },
+          "400": {
+            "description": "Invalid name, channel, project scope or webhook URL"
+          },
+          "403": {
+            "description": "Requires an organization admin session or an Admin developer key"
+          },
+          "409": {
+            "description": "An application with this name already exists in this environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Create an application and mint its first key.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}": {
+      "get": {
+        "operationId": "get_application",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "tags": [
+          "Govern"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_application",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Invalid name, channel, project scope or webhook URL"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          },
+          "409": {
+            "description": "An application with this name already exists in this environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Patch an application. A change to the default mode or to any channel's\nmode is an audited event with the actor and the previous and new mode.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/keys": {
+      "get": {
+        "operationId": "list_application_keys",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApplicationKeyDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Key metadata, newest first; never a secret"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/keys/rotate": {
+      "post": {
+        "operationId": "rotate_application_key",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateKeyBody"
+              }
+            }
+          },
+          "description": "Optional; defaults to a one-day overlap",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotateKeyResponse"
+                }
+              }
+            },
+            "description": "New key minted; the secret appears only here"
+          },
+          "400": {
+            "description": "overlap_seconds out of range"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Rotate the application's key: mint a new one and give the previous keys an\noverlap window, after which they are refused.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/observe-report": {
+      "get": {
+        "operationId": "observe_report",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Inclusive start, RFC 3339; default fourteen days before `to`",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exclusive end, RFC 3339; default now",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObserveReport"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Window empty, inverted or longer than the maximum"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The observe report: counts by decision, policy and channel over a window,\nwould-have separated from enforced.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/observe-report.csv": {
+      "get": {
+        "operationId": "observe_report_csv",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Inclusive start, RFC 3339; default fourteen days before `to`",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exclusive end, RFC 3339; default now",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {}
+            },
+            "description": "One line per (policy, version, channel, mode, source, status, outcome) bucket, with `would_have` and `enforced` in columns of their own"
+          },
+          "400": {
+            "description": "Window empty, inverted or longer than the maximum"
+          },
+          "403": {
+            "description": "Requires an organization admin session or an Admin developer key"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The observe report as a CSV of the buckets its counts were summed from.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/observe-report.pdf": {
+      "get": {
+        "operationId": "observe_report_pdf",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Inclusive start, RFC 3339; default fourteen days before `to`",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exclusive end, RFC 3339; default now",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {}
+            },
+            "description": "The report as a document carrying the organization, the application, the environment, the window, the generation time, and the policy name and version behind each count"
+          },
+          "400": {
+            "description": "Window empty, inverted or longer than the maximum"
+          },
+          "403": {
+            "description": "Requires an organization admin session or an Admin developer key"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The observe report as a PDF the account holder sends to a reviewer.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/patients": {
+      "delete": {
+        "operationId": "purge_application_patients",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Purge every patient's state and ledger for an application (retention, or\nthe end of the relationship). Decision records are untouched.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/applications/{application_id}/webhook-secret/rotate": {
+      "post": {
+        "operationId": "rotate_webhook_secret",
+        "parameters": [
+          {
+            "description": "Application id",
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MintedWebhookSecret"
+                }
+              }
+            },
+            "description": "Rotated; the secret appears only here"
+          },
+          "403": {
+            "description": "Requires an organization admin session or an Admin developer key"
+          },
+          "404": {
+            "description": "No such application in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Replace the application's webhook signing secret. The new secret is in\nthis response only; deliveries attempted from now on are signed with it.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/decisions/{decision_id}": {
+      "get": {
+        "operationId": "get_decision",
+        "parameters": [
+          {
+            "description": "Decision id",
+            "in": "path",
+            "name": "decision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key"
+          },
+          "404": {
+            "description": "No such decision for this application"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The decision with its review state; the first hold-resolution path.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/decisions/{decision_id}/outcome": {
+      "post": {
+        "operationId": "record_outcome",
+        "parameters": [
+          {
+            "description": "Decision id",
+            "in": "path",
+            "name": "decision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionView"
+                }
+              }
+            },
+            "description": "The same outcome was already recorded"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionView"
+                }
+              }
+            },
+            "description": "Outcome recorded"
+          },
+          "400": {
+            "description": "Invalid hash or delivery reference, or delivered without a hash"
+          },
+          "403": {
+            "description": "Not an application key"
+          },
+          "404": {
+            "description": "No such decision for this application"
+          },
+          "409": {
+            "description": "A different outcome is already recorded"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Report what was delivered for a decision. One outcome per decision: a\nreplay that says the same thing is `200`, one that differs is `409`.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/disclosures": {
+      "post": {
+        "operationId": "record_disclosure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDisclosureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisclosureView"
+                }
+              }
+            },
+            "description": "The conversation's evidence already exists"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisclosureView"
+                }
+              }
+            },
+            "description": "Evidence recorded; attach `ref` on every evaluate for the conversation"
+          },
+          "400": {
+            "description": "Blank or oversized text, or an invalid conversation id"
+          },
+          "403": {
+            "description": "Not an application key, or a key not bound to the named application"
+          },
+          "503": {
+            "description": "The evidence could not be recorded; retry"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Record the AI-identity disclosure shown at the start of a conversation.\nOnce per conversation; a second call returns the same evidence with `200`.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/evaluate": {
+      "post": {
+        "description": "Enforce answers inline (`200`); observe accepts (`202`) and evaluates off\nthe request path; a channel that is `off` answers `200` with\n`status = not_evaluated`. A replay of a `turn_id` returns the stored\ndecision. `Idempotency-Key`, when sent, must equal `turn_id`.",
+        "operationId": "evaluate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionView"
+                }
+              }
+            },
+            "description": "Decided inline (enforce), replayed, or not evaluated (channel off)"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionView"
+                }
+              }
+            },
+            "description": "Accepted (observe); evaluated off the request path, poll the decision id"
+          },
+          "400": {
+            "description": "Invalid identifiers, content, metadata, or an audience not allowed on the channel"
+          },
+          "403": {
+            "description": "Not an application key, or a key not bound to the named application"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Evaluate one turn of the application's AI output.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs": {
+      "get": {
+        "operationId": "list_handoffs",
+        "parameters": [
+          {
+            "description": "Staff may narrow to one application; a key is always its own",
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "queued | claimed | resolved",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "assigned_to",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "created (default) | due",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandoffList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key or a staff session of the organization"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The application-scoped hand-offs of the organization and environment.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs/{handoff_id}": {
+      "get": {
+        "operationId": "handoff_detail",
+        "parameters": [
+          {
+            "description": "Hand-off id",
+            "in": "path",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalHandoffDetail"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key or a staff session of the organization"
+          },
+          "404": {
+            "description": "No such external hand-off in this organization and environment"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "One hand-off with its events and the decisions that opened or joined it.\nThe inbound text is on this staff-and-application surface only.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs/{handoff_id}/claim": {
+      "post": {
+        "operationId": "claim_handoff",
+        "parameters": [
+          {
+            "description": "Hand-off id",
+            "in": "path",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareHandoff"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Staff only, and only staff the routing names"
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The hand-off changed; refresh before acting"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ],
+        "summary": "Claim the hand-off. `expected_version` must be the current version.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs/{handoff_id}/contact-attempt": {
+      "post": {
+        "operationId": "contact_handoff",
+        "parameters": [
+          {
+            "description": "Hand-off id",
+            "in": "path",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareHandoff"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Missing outcome, note, or next due time"
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ],
+        "summary": "Record a contact attempt on a claimed hand-off.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs/{handoff_id}/resolve": {
+      "post": {
+        "operationId": "resolve_handoff",
+        "parameters": [
+          {
+            "description": "Hand-off id",
+            "in": "path",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareHandoff"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ],
+        "summary": "Resolve a claimed hand-off.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/handoffs/{handoff_id}/resume": {
+      "post": {
+        "operationId": "resume_handoff",
+        "parameters": [
+          {
+            "description": "Hand-off id",
+            "in": "path",
+            "name": "handoff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CareHandoff"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ],
+        "summary": "Release the hold on a resolved hand-off.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/patients/consent": {
+      "post": {
+        "operationId": "record_patient_consent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientStateView"
+                }
+              }
+            },
+            "description": "The patient's current state"
+          },
+          "400": {
+            "description": "Invalid patient reference"
+          },
+          "403": {
+            "description": "Not an application key"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Record consent granted or revoked for a patient of the key's application.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/patients/opt-out": {
+      "post": {
+        "operationId": "record_patient_opt_out",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptOutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientStateView"
+                }
+              }
+            },
+            "description": "The patient's current state"
+          },
+          "400": {
+            "description": "Invalid patient reference"
+          },
+          "403": {
+            "description": "Not an application key"
+          },
+          "409": {
+            "description": "The patient opted out in their own words; only a START from the patient opts them back in"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Record a patient opting out, or back in. An opt-out the patient typed\n(STOP in their inbound message) cannot be undone here.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/patients/state": {
+      "post": {
+        "operationId": "read_patient_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientStateView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Invalid patient reference"
+          },
+          "403": {
+            "description": "Not an application key"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The patient's state. A POST so the reference travels in the body, never\nin a path that a request log keeps.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/transcripts": {
+      "post": {
+        "operationId": "submit_transcripts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptJobView"
+                }
+              }
+            },
+            "description": "Replayed: a job with this Idempotency-Key already exists"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptJobView"
+                }
+              }
+            },
+            "description": "Accepted; the job is being processed"
+          },
+          "400": {
+            "description": "An empty or oversized batch, a repeated turn_id, an invalid turn, or a sent_at in the future"
+          },
+          "403": {
+            "description": "Not an application key, or a key not bound to the named application"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Post a batch of past turns for observe-only evaluation. The batch is\nvalidated whole (nothing is stored if any turn is refused), held as a job,\nand processed off the request path; poll the job id. `Idempotency-Key`,\nwhen sent, replays the job it opened.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/transcripts/{job_id}": {
+      "get": {
+        "operationId": "transcript_job",
+        "parameters": [
+          {
+            "description": "Transcript job id",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptJobView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key"
+          },
+          "404": {
+            "description": "No such job for this application"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "A transcript job's status and counts.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/transcripts/{job_id}/turns": {
+      "get": {
+        "operationId": "transcript_job_turns",
+        "parameters": [
+          {
+            "description": "Transcript job id",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TranscriptTurnView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key"
+          },
+          "404": {
+            "description": "No such job for this application"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The turns of a transcript job in batch order, each with the decision it\nproduced or matched. Never the text.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    },
+    "/api/v1/govern/webhook-deliveries": {
+      "get": {
+        "operationId": "list_webhook_deliveries",
+        "parameters": [
+          {
+            "description": "Only deliveries about this decision",
+            "in": "query",
+            "name": "decision_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only deliveries about this hand-off",
+            "in": "query",
+            "name": "handoff_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "pending | delivered | exhausted | skipped",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookDeliveryView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not an application key"
+          }
+        },
+        "security": [
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The webhook delivery log for the key's application: newest first, at most\ntwo hundred. Filter by `decision_id`, `handoff_id`, `status`.",
+        "tags": [
+          "Govern"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApplicationDto": {
+        "properties": {
+          "channel_policies": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ChannelPolicy"
+            },
+            "description": "Per-channel overrides, keyed by `sms` | `app_message` | `web_chat` |\n`voice` | `email`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "consent_required_channels": {
+            "description": "Which channels require a `granted` consent on record, resolved: the per-channel default with this application's overrides applied. Derived and read-only: `channel_policies` names only the deviations, so this answers \"which channels require it\" without the caller knowing the defaults.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "default_mode": {
+            "$ref": "#/components/schemas/GovernMode"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "frequency_cap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FrequencyCap",
+                "description": "The per-patient message cap per fixed window, if any."
+              }
+            ]
+          },
+          "frequency_cap_unreadable": {
+            "description": "True when the stored cap cannot be read. The cap then holds every turn\n(fail-closed), so `frequency_cap: null` alone would read as \"no cap\"\nwhile the gate is holding everything.",
+            "type": "boolean"
+          },
+          "handoff_routing": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RoutingPolicy",
+                "description": "The routing hand-offs opened for this application's patients are given; `null` opens them on the organization's default queue."
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "description": "Policy scope; `null` is the organization-level active policy.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "red_flag_categories": {
+            "description": "The red-flag categories the inbound screen runs with.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "webhook_secret_hint": {
+            "description": "The last four characters of the webhook signing secret.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "webhook_secret_rotated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "webhook_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "environment_id",
+          "name",
+          "default_mode",
+          "channel_policies",
+          "red_flag_categories",
+          "frequency_cap_unreadable",
+          "consent_required_channels",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ApplicationKeyDto": {
+        "description": "Key metadata. Never the hash, never the secret.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "Set by rotation: when this key stops authenticating.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "key_hint": {
+            "description": "The last four characters of the secret, for telling keys apart.",
+            "type": "string"
+          },
+          "last_used_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "key_hint",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CareHandoff": {
+        "properties": {
+          "application_id": {
+            "description": "The Govern application whose patient this hand-off is about.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assigned_to": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "automation_resumed_at": {
+            "description": "The hold survives resolution until a person explicitly releases it.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disposition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "episode_id": {
+            "description": "Not used by Govern; null.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "escalated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "escalation_due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "patient_ref_hash": {
+            "description": "SHA-256 of the customer's opaque patient reference; never the reference.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pauses_automation": {
+            "description": "Whether this item also pauses automated messaging to its subject. `automation_resumed_at == null` alone says only that a person owns the item (one per patient, whichever kind it is). Automation is paused while `automation_resumed_at == null && pauses_automation`. A red flag, an exhausted budget, a missing policy, an unknown wire outcome and the Govern route-to-human path all pause; an item that only owes a patient a reply does not.",
+            "type": "boolean"
+          },
+          "queue_label": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "resolution_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "routing_snapshot": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Value"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "xuser_id": {
+            "description": "Null for Govern hand-offs; `application_id` and `patient_ref_hash` name the subject.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "environment_id",
+          "reason",
+          "state",
+          "queue_label",
+          "pauses_automation",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "CareHandoffEvent": {
+        "properties": {
+          "actor_user_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Value"
+          },
+          "handoff_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "organization_id": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "source_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "handoff_id",
+          "organization_id",
+          "environment_id",
+          "event_type",
+          "source_key",
+          "evidence",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ChannelBreakdown": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Counts"
+          },
+          {
+            "properties": {
+              "channel": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ChannelPolicy": {
+        "description": "A per-channel binding: the policy scope, the mode, and the consent requirement for one channel. An absent field means the channel's default.",
+        "properties": {
+          "mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernMode"
+              }
+            ]
+          },
+          "project_id": {
+            "description": "The project whose active policy decides this channel; `null` means the\napplication's `project_id`.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "requires_consent": {
+            "description": "Whether an outbound turn on this channel requires a `granted` consent on record; absent means the channel's default (`sms`, `voice` and `email` require it).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ConsentRequest": {
+        "description": "`POST /api/v1/govern/patients/consent`. The reference travels in the body,\nnever in a path, so it is never in a request log.",
+        "properties": {
+          "at": {
+            "description": "When the patient granted or revoked; default now.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "channel": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernChannel"
+              }
+            ]
+          },
+          "patient_ref": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ConsentState"
+          }
+        },
+        "required": [
+          "patient_ref",
+          "state"
+        ],
+        "type": "object"
+      },
+      "ConsentState": {
+        "enum": [
+          "granted",
+          "revoked"
+        ],
+        "type": "string"
+      },
+      "ContactRequest": {
+        "properties": {
+          "expected_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "next_due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "outcome",
+          "note"
+        ],
+        "type": "object"
+      },
+      "Counts": {
+        "description": "Counts keyed by the raw gate decision (`allow`, `rewrite`,\n`block_and_review`, `policy_missing`, `unavailable`) for observe turns, and\nby the binding answer (`allow`, `hold`, `block`) for enforce turns.",
+        "properties": {
+          "enforced": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "would_have": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "would_have",
+          "enforced"
+        ],
+        "type": "object"
+      },
+      "CreateApplicationRequest": {
+        "properties": {
+          "channel_policies": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ChannelPolicy"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernMode"
+              }
+            ]
+          },
+          "frequency_cap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FrequencyCap",
+                "description": "The per-patient message cap per fixed window; none by\ndefault."
+              }
+            ]
+          },
+          "handoff_routing": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RoutingPolicy",
+                "description": "The routing a hand-off opened for this application's patients is given: queue label, primary and backup staff, response and\nescalation seconds. Staff must be members of the organization."
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "red_flag_categories": {
+            "description": "The red-flag categories the inbound screen runs with (`cardiac`,\n`respiratory`, `neuro_stroke`, `self_harm`). Default: all four.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "webhook_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreateApplicationResponse": {
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ApplicationDto"
+          },
+          "key": {
+            "$ref": "#/components/schemas/MintedKeyDto"
+          },
+          "webhook_secret": {
+            "$ref": "#/components/schemas/MintedWebhookSecret",
+            "description": "The webhook signing secret, shown here once."
+          }
+        },
+        "required": [
+          "application",
+          "key",
+          "webhook_secret"
+        ],
+        "type": "object"
+      },
+      "DecisionStatus": {
+        "enum": [
+          "pending",
+          "decided",
+          "unavailable",
+          "not_evaluated"
+        ],
+        "type": "string"
+      },
+      "DecisionView": {
+        "description": "The decision as the contract presents it, from `evaluate` and from the\npoll. `released_content` and `deliverable_content` are the only fields that\ncan carry message text, and each does so under a stated condition.",
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/GovernAudience"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/GovernChannel"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision": {
+            "$ref": "#/components/schemas/GovernDecision"
+          },
+          "decision_id": {
+            "description": "Absent only when the channel is `off`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deliverable_content": {
+            "description": "Clinician audience only: the gate's term substitution, when there is\none to deliver. Never present for a patient audience.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detected_claims": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "disclosure_required": {
+            "type": "boolean"
+          },
+          "handoff": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HandoffRef",
+                "description": "The hand-off this decision opened or joined, with its current state."
+              }
+            ]
+          },
+          "inbound_flags": {
+            "description": "The red-flag rules the inbound matched; rule ids and categories only.",
+            "items": {
+              "$ref": "#/components/schemas/InboundFlag"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/GovernMode"
+          },
+          "model": {
+            "description": "The model the caller named for this turn, and its version. Null when the caller named none; never inferred.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OutcomeView",
+                "description": "What the customer reported delivering, once it has."
+              }
+            ]
+          },
+          "policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              }
+            ]
+          },
+          "rationale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "released_content": {
+            "description": "Present once a reviewer released the held content: what to deliver.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              }
+            ]
+          },
+          "review_url": {
+            "description": "Console deep link for the customer's own reviewers, present when the\ndecision is in (or has been through) the review queue.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route_to_human": {
+            "description": "A person must contact this patient. Independent of\n`decision`: a clean draft can be `allow` with `route_to_human: true`,\nand a violating one `hold` with it.",
+            "type": "boolean"
+          },
+          "send_holding_line": {
+            "description": "Send your holding line to this patient now.\n\nThis turn was stopped and the patient is waiting on a reply that is not coming, so the application sends the fixed text its clinical owner wrote: a person will reply, when, and what to do if it is urgent. **The contract says when, never what**: the text is the application's own, it is never model-written, and this service does not send it on the application's behalf.\n\n`false` whenever another send would be the wrong thing rather than merely unnecessary: an opt-out, a missing or revoked consent, and a frequency cap each stop the turn because this patient should not be messaged, and a holding line is a message. It is also `false` in observe, where nothing was stopped and the caller was told to deliver.\n\nOne per stopped turn: each `evaluate` is one turn, so a second stopped draft in the same conversation is a second turn with its own answer.",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DecisionStatus"
+          },
+          "stop_class": {
+            "description": "Which of the two stopped classes this turn is: `never_sendable` | `uncertain`, null when nothing was stopped.\n\nIn **enforce** it describes the `hold` the caller received: a never-sendable turn has no release path, so the application's own reviewers are told to record a replacement rather than wait for one. In **observe** it is read beside `would_have` and describes what the stop would have been: `would_have` keeps its documented vocabulary (the raw gate decision), and this carries the class the same turn was classified with.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "webhook_deliveries": {
+            "description": "The signed webhook deliveries about this decision: the\nlog, never the body.",
+            "items": {
+              "$ref": "#/components/schemas/WebhookDeliveryView"
+            },
+            "type": "array"
+          },
+          "would_have": {
+            "description": "Observe: the raw gate decision (`allow` | `rewrite` | `block_and_review`\n| `policy_missing`) or `unavailable`. Null in enforce.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "would_have_routed": {
+            "description": "Observe: the screen matched and would have routed; no task was opened.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "decision",
+          "mode",
+          "channel",
+          "audience",
+          "conversation_id",
+          "turn_id",
+          "reasons",
+          "detected_claims",
+          "disclosure_required",
+          "send_holding_line",
+          "route_to_human",
+          "would_have_routed",
+          "inbound_flags",
+          "webhook_deliveries"
+        ],
+        "type": "object"
+      },
+      "DisclosureAttachment": {
+        "properties": {
+          "established": {
+            "description": "The caller's own assertion; informational. The gate reads the ref.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ref": {
+            "description": "The reference returned when THIS conversation's disclosure was\nrecorded. Any other value is ignored, and the turn is answered on\nthis conversation's own evidence, so a reference borrowed from\nanother conversation or application leaves the disclosure owed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "DisclosureView": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/GovernChannel"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "evidence_id": {
+            "description": "The evidence row; the id a reviewer sees in the console.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Attach this as `disclosure.ref` on every evaluate for the conversation.\n`evaluate` also derives it from `conversation_id` when absent.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "application_id",
+          "conversation_id",
+          "channel",
+          "evidence_id",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "EvaluateRequest": {
+        "properties": {
+          "application_id": {
+            "description": "Optional; when present it must be the application the key is bound to.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audience": {
+            "$ref": "#/components/schemas/GovernAudience"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/GovernChannel"
+          },
+          "content": {
+            "description": "The draft the customer's AI produced.",
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "disclosure": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DisclosureAttachment"
+              }
+            ]
+          },
+          "inbound": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/InboundMessage",
+                "description": "The patient's message this turn answers. Screened by the\ndeterministic red-flag floor with the application's categories; a\nmatch routes the patient to a person. Requires `patient_ref`."
+              }
+            ]
+          },
+          "metadata": {
+            "description": "Free JSON, stored and never evaluated."
+          },
+          "mode_hint": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernMode",
+                "description": "Advisory. The application's configured mode decides; a hint that\ndisagrees is ignored."
+              }
+            ]
+          },
+          "model": {
+            "description": "The model the caller's application ran for this turn, as the caller\nnames it. Recorded, never interpreted: the platform does\nnot run this model and has nothing to check the name against.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_version": {
+            "description": "That model's version, as the caller names it. Independent of `model`:\na caller that versions one and not the other is recorded as it is\nrather than refused.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "patient_ref": {
+            "description": "The customer's opaque patient identifier. Stored only as a SHA-256.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "description": "The idempotency key per application: a replay returns the stored\ndecision. Must not start with `govern:`, which is reserved for the\nrows the platform writes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "turn_id",
+          "channel",
+          "audience",
+          "content"
+        ],
+        "type": "object"
+      },
+      "ExternalDecisionEvidence": {
+        "description": "One Govern decision that opened or joined an external hand-off: the\nevidence a person works from. `inbound_content` is the patient's own\nmessage, PHI-visible on this staff-authorised surface only.",
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "inbound_content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inbound_flags": {},
+          "inbound_received_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "conversation_id",
+          "turn_id",
+          "inbound_flags",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ExternalHandoffDetail": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/ExternalDecisionEvidence"
+            },
+            "type": "array"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/CareHandoffEvent"
+            },
+            "type": "array"
+          },
+          "handoff": {
+            "$ref": "#/components/schemas/CareHandoff"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ExternalSubject"
+          }
+        },
+        "required": [
+          "environment_id",
+          "handoff",
+          "events",
+          "subject",
+          "decisions"
+        ],
+        "type": "object"
+      },
+      "ExternalSubject": {
+        "description": "The subject of an external hand-off, for its readers.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "patient_ref_hash": {
+            "description": "SHA-256 of the customer's opaque patient reference.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id",
+          "patient_ref_hash"
+        ],
+        "type": "object"
+      },
+      "FrequencyCap": {
+        "description": "The application's per-patient cap: at most `max_messages` per fixed window\nof `window_seconds`, counted from the first message of the window.",
+        "properties": {
+          "max_messages": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "window_seconds": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_messages",
+          "window_seconds"
+        ],
+        "type": "object"
+      },
+      "FrequencyView": {
+        "properties": {
+          "max_messages": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "remaining": {
+            "description": "Messages left in the current window (the full cap once it has lapsed).",
+            "format": "int32",
+            "type": "integer"
+          },
+          "window_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "window_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "window_started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "max_messages",
+          "window_seconds",
+          "window_count",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "GovernAudience": {
+        "enum": [
+          "patient",
+          "clinician"
+        ],
+        "type": "string"
+      },
+      "GovernChannel": {
+        "description": "The channel vocabulary of the contract.",
+        "enum": [
+          "sms",
+          "app_message",
+          "web_chat",
+          "voice",
+          "email"
+        ],
+        "type": "string"
+      },
+      "GovernDecision": {
+        "description": "The contract's three answers.",
+        "enum": [
+          "allow",
+          "hold",
+          "block"
+        ],
+        "type": "string"
+      },
+      "GovernMode": {
+        "description": "Per policy, per application: is the gate consulted, and is its answer\nbinding? `Off` is not evaluated; `Observe` is evaluated and recorded as\n`would_have` while the caller is always told allow; `Enforce` returns the\ndecision and it binds.",
+        "enum": [
+          "off",
+          "observe",
+          "enforce"
+        ],
+        "type": "string"
+      },
+      "HandoffList": {
+        "properties": {
+          "awaiting_reply": {
+            "description": "Which of these items carry a stopped draft nobody has answered yet. A patient has one open item, so a stop joins whatever they already have (a paused automation, a flagged inbound). The item keeps the reason it was opened for, and this lists what it now also owes.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CareHandoff"
+            },
+            "type": "array"
+          },
+          "patient_names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "environment_id",
+          "items",
+          "total",
+          "patient_names",
+          "awaiting_reply"
+        ],
+        "type": "object"
+      },
+      "HandoffRef": {
+        "description": "The hand-off a decision opened or joined, as the contract shows it.",
+        "properties": {
+          "assigned_to": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "automation_resumed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "escalation_due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "pauses_automation": {
+            "description": "Whether this hand-off also pauses automated messaging to the subject. `automation_resumed_at == null` says a person owns it;\nthis says whether the application should stop sending meanwhile. The\ntwo are read together: still paused is\n`automation_resumed_at == null && pauses_automation`.",
+            "type": "boolean"
+          },
+          "queue_label": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`queued` | `claimed` | `resolved`.",
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "version",
+          "queue_label",
+          "pauses_automation"
+        ],
+        "type": "object"
+      },
+      "InboundFlag": {
+        "description": "One red-flag rule the inbound matched. Rule id and category only; never\nthe text.",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "category"
+        ],
+        "type": "object"
+      },
+      "InboundMessage": {
+        "description": "The patient's message this turn answers.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "received_at"
+        ],
+        "type": "object"
+      },
+      "MintedKeyDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ApplicationKeyDto"
+          },
+          {
+            "properties": {
+              "secret": {
+                "description": "The raw key. This is its only appearance; store it server-side.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "secret"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A key at mint time: the metadata plus the secret, which is shown once."
+      },
+      "MintedWebhookSecret": {
+        "description": "A freshly minted signing secret: the plaintext, shown once, and when.",
+        "properties": {
+          "rotated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "webhook_secret": {
+            "description": "The secret. This is its only appearance; store it server-side.",
+            "type": "string"
+          },
+          "webhook_secret_hint": {
+            "description": "Its last four characters, for telling secrets apart.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "webhook_secret",
+          "webhook_secret_hint",
+          "rotated_at"
+        ],
+        "type": "object"
+      },
+      "ModelBreakdown": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Counts"
+          },
+          {
+            "properties": {
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "The same counts, per model and version the caller named. A bucket with both fields null counts the turns whose caller named no model. Send a stable model name so the report stays readable."
+      },
+      "ObserveReport": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Counts"
+          },
+          {
+            "properties": {
+              "application_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "by_channel": {
+                "items": {
+                  "$ref": "#/components/schemas/ChannelBreakdown"
+                },
+                "type": "array"
+              },
+              "by_model": {
+                "items": {
+                  "$ref": "#/components/schemas/ModelBreakdown"
+                },
+                "type": "array"
+              },
+              "by_policy": {
+                "items": {
+                  "$ref": "#/components/schemas/PolicyBreakdown"
+                },
+                "type": "array"
+              },
+              "from": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "rates": {
+                "$ref": "#/components/schemas/Rates"
+              },
+              "to": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "totals": {
+                "$ref": "#/components/schemas/Totals"
+              }
+            },
+            "required": [
+              "application_id",
+              "from",
+              "to",
+              "totals",
+              "by_policy",
+              "by_channel",
+              "by_model",
+              "rates"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "OptOutRequest": {
+        "description": "`POST /api/v1/govern/patients/opt-out`. `opted_out: false` records the\npatient opting back in, which the application may do only for an opt-out\nit recorded itself.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "channel": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernChannel"
+              }
+            ]
+          },
+          "opted_out": {
+            "type": "boolean"
+          },
+          "patient_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "patient_ref",
+          "opted_out"
+        ],
+        "type": "object"
+      },
+      "OutcomeRequest": {
+        "properties": {
+          "delivered": {
+            "description": "The customer delivered a message for this turn.",
+            "type": "boolean"
+          },
+          "delivered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "delivered_content_hash": {
+            "description": "SHA-256, hex, of the UTF-8 text delivered. Required when `delivered`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery_ref": {
+            "description": "The customer's own reference for the delivery.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "delivered",
+          "delivered_at"
+        ],
+        "type": "object"
+      },
+      "OutcomeView": {
+        "properties": {
+          "delivered": {
+            "type": "boolean"
+          },
+          "delivered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "delivered_content_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hash_matches_release": {
+            "description": "Whether the delivered hash matches the content the record says was\ndeliverable. `null` when nothing was delivered or there was nothing to\ncompare against.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivered",
+          "delivered_at",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "PatchApplicationRequest": {
+        "description": "Every field optional; only the ones present change. `channel_policies`\nreplaces the whole map when present (send the full map back).",
+        "properties": {
+          "channel_policies": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ChannelPolicy"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GovernMode"
+              }
+            ]
+          },
+          "frequency_cap": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FrequencyCap",
+                "description": "`null` removes the cap."
+              }
+            ]
+          },
+          "handoff_routing": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RoutingPolicy",
+                "description": "`null` clears the routing; hand-offs then open with the\norganization's default queue and no deadlines."
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "description": "`null` clears the project scope back to the organization policy.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "red_flag_categories": {
+            "description": "Replaces the whole list when present; must not be empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "webhook_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PatientEventView": {
+        "properties": {
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "occurred_at",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "PatientStateRequest": {
+        "description": "`POST /api/v1/govern/patients/state`: a read, as a POST so the reference\nstays out of the URL.",
+        "properties": {
+          "patient_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "patient_ref"
+        ],
+        "type": "object"
+      },
+      "PatientStateView": {
+        "description": "The state as the contract shows it. The reference itself is never in it.",
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "consent_changed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consent_state": {
+            "description": "`unknown` | `granted` | `revoked`.",
+            "type": "string"
+          },
+          "events": {
+            "description": "The most recent transitions, newest first (at most twenty).",
+            "items": {
+              "$ref": "#/components/schemas/PatientEventView"
+            },
+            "type": "array"
+          },
+          "frequency": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FrequencyView"
+              }
+            ]
+          },
+          "last_contact_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opted_out": {
+            "type": "boolean"
+          },
+          "opted_out_changed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opted_out_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "patient_ref_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id",
+          "patient_ref_hash",
+          "consent_state",
+          "opted_out",
+          "events"
+        ],
+        "type": "object"
+      },
+      "PolicyBreakdown": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Counts"
+          },
+          {
+            "properties": {
+              "policy_id": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "policy_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "policy_version": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ]
+      },
+      "PolicyRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "PurgeResponse": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "patient_events_removed": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "patient_states_removed": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "application_id",
+          "patient_states_removed",
+          "patient_events_removed"
+        ],
+        "type": "object"
+      },
+      "Rates": {
+        "description": "Fractions in `[0, 1]`, never percentages: the share of decided observe\nturns the gate would have withheld, and of decided enforce turns it held.",
+        "properties": {
+          "enforced_held": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "would_have_withheld": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RecordDisclosureRequest": {
+        "properties": {
+          "application_id": {
+            "description": "Optional; when present it must be the application the key is bound to.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "description": "When it was shown.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/GovernChannel"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "text_shown": {
+            "description": "The disclosure text the patient was shown, verbatim.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "channel",
+          "text_shown",
+          "at"
+        ],
+        "type": "object"
+      },
+      "ResolveRequest": {
+        "properties": {
+          "disposition": {
+            "type": "string"
+          },
+          "expected_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "resume_automation": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_version",
+          "disposition",
+          "note",
+          "resume_automation"
+        ],
+        "type": "object"
+      },
+      "ResumeRequest": {
+        "properties": {
+          "expected_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "note"
+        ],
+        "type": "object"
+      },
+      "ReviewState": {
+        "enum": [
+          "pending",
+          "released",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "RotateKeyBody": {
+        "properties": {
+          "overlap_seconds": {
+            "description": "How long the previous keys keep authenticating after this rotation.\nDefault one day; at most seven. Zero refuses the previous keys at once.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RotateKeyResponse": {
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/MintedKeyDto"
+          },
+          "previous_keys_expire_at": {
+            "description": "When every previous key of the application stops authenticating.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "previous_keys_expire_at"
+        ],
+        "type": "object"
+      },
+      "RoutingPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "backup_user_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "coverage_note": {
+            "description": "Operator-facing note; free text.",
+            "type": "string"
+          },
+          "escalation_seconds": {
+            "description": "Additional elapsed time after the response deadline before backup routing.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "primary_user_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "queue_label": {
+            "type": "string"
+          },
+          "response_seconds": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "queue_label",
+          "primary_user_ids",
+          "backup_user_ids",
+          "response_seconds",
+          "escalation_seconds",
+          "coverage_note"
+        ],
+        "type": "object"
+      },
+      "Totals": {
+        "properties": {
+          "decisions": {
+            "description": "Every decision record in the window, any mode or status.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "enforce": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "observe": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "transcript": {
+            "description": "Records that came from a transcript batch rather than a\nlive call; always observe, counted in `observe` as well.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "unavailable": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decisions",
+          "observe",
+          "enforce",
+          "pending",
+          "unavailable",
+          "transcript"
+        ],
+        "type": "object"
+      },
+      "TranscriptBatch": {
+        "properties": {
+          "application_id": {
+            "description": "Optional; when present it must be the application the key is bound to.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turns": {
+            "description": "One to 1,000 turns; `turn_id` unique within the batch.",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptTurn"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "turns"
+        ],
+        "type": "object"
+      },
+      "TranscriptJobStatus": {
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "TranscriptJobView": {
+        "description": "A job as the contract presents it. Counts, never text.",
+        "properties": {
+          "abandoned": {
+            "description": "Turns a failed job gave up on: never evaluated, no decision, their\ntext cleared with the job. Only ever non-zero when `status` is\n`failed`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "application_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "duplicate": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "description": "A code when `status` is `failed`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evaluated": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "processed": {
+            "description": "Turns processed so far: `evaluated + duplicate`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscriptJobStatus"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "total": {
+            "description": "Turns in the batch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "unavailable": {
+            "description": "Evaluated turns the gate did not answer for.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "would_have": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "description": "Raw gate decisions over the evaluated turns that are decided:\n`allow`, `rewrite`, `block_and_review`, `policy_missing`,\n`unavailable`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "job_id",
+          "application_id",
+          "status",
+          "total",
+          "processed",
+          "evaluated",
+          "duplicate",
+          "abandoned",
+          "unavailable",
+          "would_have",
+          "submitted_at"
+        ],
+        "type": "object"
+      },
+      "TranscriptTurn": {
+        "description": "One past turn as the customer posts it.",
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/GovernAudience"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/GovernChannel"
+          },
+          "content": {
+            "description": "The text that went out.",
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "model": {
+            "description": "The model that produced the turn, and its version, as the caller names them. Optional; recorded on the decision, never interpreted. Batches from before and after a model change are told apart by these.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sent_at": {
+            "description": "When it went out. The observe report windows on it.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "turn_id": {
+            "description": "The idempotency key per application: a turn the application already\nhas a decision for is a `duplicate`. Must not start with `govern:`,\nwhich is reserved for the rows the platform writes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "turn_id",
+          "channel",
+          "audience",
+          "content",
+          "sent_at"
+        ],
+        "type": "object"
+      },
+      "TranscriptTurnView": {
+        "description": "One turn of a job, with the decision it produced or matched.",
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "decision_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision_status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionStatus"
+              }
+            ]
+          },
+          "disposition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TurnDisposition",
+                "description": "Absent until the turn is processed."
+              }
+            ]
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sent_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "would_have": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "position",
+          "conversation_id",
+          "turn_id",
+          "channel",
+          "audience",
+          "sent_at",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "TurnDisposition": {
+        "enum": [
+          "evaluated",
+          "duplicate",
+          "abandoned"
+        ],
+        "type": "string"
+      },
+      "Value": {},
+      "VersionRequest": {
+        "properties": {
+          "expected_version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "type": "object"
+      },
+      "WebhookDeliveryView": {
+        "description": "A delivery as the contract shows it on the decision. Counts and codes,\nnever the body.",
+        "properties": {
+          "attempts": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivered_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "type": "string"
+          },
+          "handoff_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "last_attempt_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_status_code": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_attempt_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`pending` | `delivered` | `exhausted` | `skipped`.",
+            "type": "string"
+          },
+          "subject_version": {
+            "description": "The revision of the subject this delivery is about: the hand-off's\n`version` at the change, or `0` for an event keyed to the subject's\nwhole lifetime. Two deliveries of one event differ here.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "subject_version",
+          "status",
+          "attempts",
+          "created_at"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer_token": {
+        "bearerFormat": "JWT",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "platform_app_key": {
+        "bearerFormat": "Platform app key",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "session_cookie": {
+        "in": "cookie",
+        "name": "auth_session",
+        "type": "apiKey"
+      }
+    }
+  }
+}
