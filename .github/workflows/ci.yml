@@ -72,9 +72,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          # Every example's lockfile, whichever examples this tree carries.
           cache-dependency-path: |
             pnpm-lock.yaml
-            examples/vercel-ai-chatbot/pnpm-lock.yaml
+            examples/*/pnpm-lock.yaml
 
       - name: Build the SDK
         run: pnpm install --frozen-lockfile && pnpm build
@@ -84,6 +85,44 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: pnpm install --frozen-lockfile && pnpm build
+
+      # Every example whose package.json defines a test script. This loop
+      # runs install, typecheck when defined, then test; it builds nothing,
+      # so an example may define both typecheck and test only if its
+      # typecheck needs no build output beyond the SDK's dist built above.
+      # An example without a test script is skipped.
+      - name: Examples with tests typecheck and pass against the mock
+        run: |
+          # Status 0: the script is defined; 1: it is not; a package.json jq
+          # cannot read fails the step.
+          has_script() {
+            local rc=0
+            jq -e --arg name "$2" '.scripts[$name] | type == "string"' "$1" >/dev/null || rc=$?
+            if [ "$rc" -gt 1 ]; then
+              echo "::error file=$1::cannot read the scripts of $1"
+              exit 1
+            fi
+            return "$rc"
+          }
+          for manifest in examples/*/package.json; do
+            [ -f "$manifest" ] || continue
+            has_script "$manifest" test || continue
+            dir="$(dirname "$manifest")"
+            echo "::group::$dir"
+            # Left of ||, the subshell runs without -e, so each command
+            # carries its own || exit.
+            rc=0
+            (
+              cd "$dir" || exit
+              pnpm install --frozen-lockfile || exit
+              if has_script package.json typecheck; then
+                pnpm typecheck || exit
+              fi
+              pnpm test
+            ) || rc=$?
+            echo "::endgroup::"
+            [ "$rc" -eq 0 ] || exit "$rc"
+          done
 
       - name: Mock server starts and answers
         run: |

@@ -8,9 +8,11 @@
  * schema for the body, so what is in it is the server's business and may
  * change without this package moving. It is kept off `.message` and out of
  * every event, and parked on `GovernApiError.serverMessage`, where reading it
- * is a decision the caller makes for one error rather than a property of every
+ * is a decision the caller makes for one error, not a property of every
  * string the SDK hands to a log.
  */
+
+import type { ReportedOutcomeKind } from "./types";
 
 const MAX_SERVER_MESSAGE_CHARS = 300;
 
@@ -67,12 +69,63 @@ export class GovernApiError extends GovernError {
 
 /**
  * 409: the resource changed under you (a stale `expectedVersion` on a
- * hand-off action) or a different report is already recorded (an outcome that
- * disagrees with the one on file). Refresh and decide again; the SDK does not
- * retry it.
+ * hand-off action, a `retryOf` or `supersedes` naming a decision that moved
+ * on) or a different outcome event of the same kind is already recorded.
+ * Refresh and decide again; the SDK does not retry it.
  */
 export class GovernConflictError extends GovernApiError {
   override readonly name = "GovernConflictError";
+}
+
+/**
+ * An outcome report an adapter made failed: the error the adapters pass to
+ * `onError` for a report that did not land. It carries the event exactly as
+ * it was sent, so the caller can send the identical event again with
+ * `reportOutcome`:
+ *
+ *   govern.reportOutcome(error.decisionId, { kind: error.kind, at: error.at, contentHash: error.contentHash, deliveryRef: error.deliveryRef, reason: error.reason }).catch(log)
+ *
+ * The same `at` makes it the same event: the API answers a resend of an event
+ * that did land with 200 and records nothing, where a resend with a new `at`
+ * would be a different event (a 409, or a second row for `failed`). The
+ * failure itself is `cause`: a `GovernConflictError` when a different event
+ * of that kind is already on record (resending changes nothing), a
+ * `GovernApiError`, `GovernNetworkError` or `GovernTimeoutError` when the
+ * transport gave up, a `GovernConfigError` when a field was refused before
+ * anything was sent. Never message text: the hash, not the content.
+ */
+export class GovernReportError extends GovernError {
+  override readonly name = "GovernReportError";
+  readonly decisionId: string;
+  /** The kind the event had: from an adapter, `released` or `discarded`. */
+  readonly kind: ReportedOutcomeKind;
+  /** The event's `at`, as it was sent. */
+  readonly at: string;
+  /** The SHA-256 hex the event carried, on `released` and `delivered`; null otherwise, and when nothing was sent. */
+  readonly contentHash: string | null;
+  /** The reference as sent, or as given when nothing was sent; trimmed as the API trims it either way. Null when there was none. */
+  readonly deliveryRef: string | null;
+  /** The reason code, as `deliveryRef` is. Null when there was none. */
+  readonly reason: string | null;
+
+  constructor(input: {
+    decisionId: string;
+    kind: ReportedOutcomeKind;
+    at: string;
+    contentHash: string | null;
+    deliveryRef: string | null;
+    reason: string | null;
+    cause: unknown;
+  }) {
+    const why = input.cause instanceof Error ? `${input.cause.name}: ${input.cause.message}` : String(input.cause);
+    super(`AnyBio Govern could not record the ${input.kind} outcome of decision ${input.decisionId}: ${why}`, { cause: input.cause });
+    this.decisionId = input.decisionId;
+    this.kind = input.kind;
+    this.at = input.at;
+    this.contentHash = input.contentHash;
+    this.deliveryRef = input.deliveryRef;
+    this.reason = input.reason;
+  }
 }
 
 /** The request could not be sent or no response arrived. */

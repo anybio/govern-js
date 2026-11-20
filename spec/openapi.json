@@ -3,7 +3,7 @@
   "info": {
     "title": "AnyBio Govern API",
     "version": "1.0.0",
-    "description": "The Govern surface of the AnyBio API. Generated from the AnyBio Govern API specification, 2026-09-26."
+    "description": "The Govern surface of the AnyBio API. Generated from the AnyBio Govern API specification, 2026-11-19."
   },
   "servers": [
     {
@@ -20,22 +20,43 @@
     "/api/v1/govern/applications": {
       "get": {
         "operationId": "list_applications",
+        "parameters": [
+          {
+            "description": "List this project's applications only. It must be a live project of the organization in this environment. Omit it for every project's.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ApplicationDto"
+                    "$ref": "#/components/schemas/ApplicationListItemDto"
                   },
                   "type": "array"
                 }
               }
             },
-            "description": "Applications in the caller's organization and environment"
+            "description": "Applications in the caller's organization and environment, each with its decision activity; under a project, that project's only"
+          },
+          "400": {
+            "description": "`X-Project-Id` is not one positive project id (`code: invalid_project_id`), or a `project_id` or `project_key` query parameter was sent (`code: project_field_removed`)"
           },
           "403": {
-            "description": "Requires an organization admin session or an Admin developer key"
+            "description": "Requires a signed-in member of the organization or an Admin developer key"
+          },
+          "404": {
+            "description": "The request's project is not a live project of this organization in this environment (`code: project_not_in_scope`)"
           }
         },
         "security": [
@@ -51,7 +72,23 @@
         ]
       },
       "post": {
+        "description": "The application belongs to the request's project: the project selected in\nthe console, or the key's own project. The body names no project; one that\nstill sends `project_id` is refused with `code: project_field_removed`. A\nrequest with no project is refused with `code: project_required`, so every\napplication has a project from the moment it exists.",
         "operationId": "create_application",
+        "parameters": [
+          {
+            "description": "The project the application belongs to, for a signed-in console session. It must be a live project of the organization in this environment. A request with no project is refused with `code: project_required`.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -71,13 +108,16 @@
                 }
               }
             },
-            "description": "Application created; the key secret appears only here"
+            "description": "Application created in the request's project; the key secret appears only here"
           },
           "400": {
-            "description": "Invalid name, channel, project scope or webhook URL"
+            "description": "Invalid name, channel or webhook URL; `code: project_field_removed`, the body names a project; or `code: project_required`, the request has no project"
           },
           "403": {
-            "description": "Requires an organization admin session or an Admin developer key"
+            "description": "Requires an organization admin session or an Admin developer key; or `code: channel_project_console_only`, a key named a `channel_policies` project"
+          },
+          "404": {
+            "description": "The request's project, or a `channel_policies` project, is not a live project of this organization in this environment"
           },
           "409": {
             "description": "An application with this name already exists in this environment"
@@ -110,6 +150,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -121,10 +174,13 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
+          },
+          "403": {
+            "description": "Requires a signed-in member of the organization or an Admin developer key"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -151,6 +207,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -172,13 +241,16 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
-            "description": "Invalid name, channel, project scope or webhook URL"
+            "description": "Invalid name, channel or webhook URL; or `code: project_field_removed`, the body names a project (an application does not move between projects)"
+          },
+          "403": {
+            "description": "`code: channel_project_console_only`: a key's write would change a `channel_policies` project"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same, or a `channel_policies` project is not a live project of this organization in this environment"
           },
           "409": {
             "description": "An application with this name already exists in this environment"
@@ -211,6 +283,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -228,7 +313,7 @@
             "description": "Key metadata, newest first; never a secret"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -256,6 +341,19 @@
             "schema": {
               "format": "uuid",
               "type": "string"
+            }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           }
         ],
@@ -285,7 +383,7 @@
             "description": "overlap_seconds out of range"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -317,6 +415,19 @@
             }
           },
           {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          {
             "description": "Inclusive start, RFC 3339; default fourteen days before `to`",
             "in": "query",
             "name": "from",
@@ -344,13 +455,16 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "description": "Window empty, inverted or longer than the maximum"
           },
+          "403": {
+            "description": "Requires a signed-in member of the organization or an Admin developer key"
+          },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -379,6 +493,19 @@
             "schema": {
               "format": "uuid",
               "type": "string"
+            }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           {
@@ -411,10 +538,10 @@
             "description": "Window empty, inverted or longer than the maximum"
           },
           "403": {
-            "description": "Requires an organization admin session or an Admin developer key"
+            "description": "Requires a signed-in member of the organization or an Admin developer key"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -443,6 +570,19 @@
             "schema": {
               "format": "uuid",
               "type": "string"
+            }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           {
@@ -475,10 +615,10 @@
             "description": "Window empty, inverted or longer than the maximum"
           },
           "403": {
-            "description": "Requires an organization admin session or an Admin developer key"
+            "description": "Requires a signed-in member of the organization or an Admin developer key"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -508,6 +648,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -519,10 +672,10 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -552,6 +705,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. An application of another project answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -569,7 +735,7 @@
             "description": "Requires an organization admin session or an Admin developer key"
           },
           "404": {
-            "description": "No such application in this organization and environment"
+            "description": "No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same"
           }
         },
         "security": [
@@ -610,7 +776,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Not an application key"
@@ -664,7 +830,7 @@
                 }
               }
             },
-            "description": "The same outcome was already recorded"
+            "description": "The same event was already recorded"
           },
           "201": {
             "content": {
@@ -674,10 +840,10 @@
                 }
               }
             },
-            "description": "Outcome recorded"
+            "description": "Event recorded"
           },
           "400": {
-            "description": "Invalid hash or delivery reference, or delivered without a hash"
+            "description": "`superseded` sent by a caller; a hash missing on released or delivered, sent on another kind, or not 64 hex characters; a blank, oversized or control-character delivery_ref or reason"
           },
           "403": {
             "description": "Not an application key"
@@ -686,7 +852,10 @@
             "description": "No such decision for this application"
           },
           "409": {
-            "description": "A different outcome is already recorded"
+            "description": "A different event of this kind is already recorded"
+          },
+          "422": {
+            "description": "An unknown kind, or a body that is not the request shape"
           }
         },
         "security": [
@@ -694,7 +863,7 @@
             "bearer_token": []
           }
         ],
-        "summary": "Report what was delivered for a decision. One outcome per decision: a\nreplay that says the same thing is `200`, one that differs is `409`.",
+        "summary": "Record an outcome event for a decision: `released`, `delivered`,\n`discarded` or `failed`. One event per kind per decision, `failed`\nexcepted: a replay that says the same thing is `200`, a different event of\na kind already recorded is `409`.",
         "tags": [
           "Govern"
         ]
@@ -791,10 +960,16 @@
             "description": "Accepted (observe); evaluated off the request path, poll the decision id"
           },
           "400": {
-            "description": "Invalid identifiers, content, metadata, or an audience not allowed on the channel"
+            "description": "Invalid identifiers, content, metadata or `turn_ref`, an audience not allowed on the channel, a `retry_of` that names no retryable decision of this conversation or names one for another `patient_ref`, or a `supersedes` over 8 ids, naming a decision twice, naming the `retry_of` decision, or naming a decision of another application, conversation or `patient_ref`"
           },
           "403": {
             "description": "Not an application key, or a key not bound to the named application"
+          },
+          "409": {
+            "description": "A `retry_of` that was already retried, or that names a turn that was retryable until a reviewer released or rejected it, another turn named it in `supersedes`, or a `delivered` event was reported on it; a `supersedes` naming an enforce decision still being decided, a decision that was delivered, one a reviewer released or rejected, or one another turn already superseded"
+          },
+          "422": {
+            "description": "A body that does not match the schema: an unknown channel or audience token, a missing or mistyped field. A field the schema does not name is ignored, not refused: check the spelling of `retry_of`, `turn_ref` and `supersedes`"
           }
         },
         "security": [
@@ -876,6 +1051,19 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "description": "List the hand-offs of this project's applications only; a staff `application_id` of another project lists nothing. Omit it for every project's.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -887,10 +1075,16 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
+          },
+          "400": {
+            "description": "A `project_id` or `project_key` query parameter (`code: project_field_removed`), or a malformed `X-Project-Id` (`code: invalid_project_id`)"
           },
           "403": {
             "description": "Not an application key or a staff session of the organization"
+          },
+          "404": {
+            "description": "`X-Project-Id` names no live project of this organization and environment (`code: project_not_in_scope`)"
           }
         },
         "security": [
@@ -920,6 +1114,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. A hand-off of another project's application answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -931,13 +1138,13 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Not an application key or a staff session of the organization"
           },
           "404": {
-            "description": "No such external hand-off in this organization and environment"
+            "description": "No such external hand-off in this organization and environment, or, for staff, one of another project's application"
           }
         },
         "security": [
@@ -967,6 +1174,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. A hand-off of another project's application answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -988,13 +1208,13 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Staff only, and only staff the routing names"
           },
           "404": {
-            "description": ""
+            "description": "Not Found"
           },
           "409": {
             "description": "The hand-off changed; refresh before acting"
@@ -1024,6 +1244,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. A hand-off of another project's application answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -1045,19 +1278,19 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "description": "Missing outcome, note, or next due time"
           },
           "403": {
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
-            "description": ""
+            "description": "Not Found"
           },
           "409": {
-            "description": ""
+            "description": "Conflict"
           }
         },
         "security": [
@@ -1084,6 +1317,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. A hand-off of another project's application answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -1105,19 +1351,19 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
-            "description": ""
+            "description": "Not Found"
           },
           "409": {
-            "description": ""
+            "description": "Conflict"
           }
         },
         "security": [
@@ -1144,6 +1390,19 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "The console's selected project. A hand-off of another project's application answers as one that does not exist.",
+            "in": "header",
+            "name": "X-Project-Id",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -1165,19 +1424,19 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
-            "description": ""
+            "description": "Not Found"
           },
           "409": {
-            "description": ""
+            "description": "Conflict"
           }
         },
         "security": [
@@ -1300,7 +1559,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "description": "Invalid patient reference"
@@ -1396,7 +1655,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Not an application key"
@@ -1443,7 +1702,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Not an application key"
@@ -1509,7 +1768,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "description": "Not an application key"
@@ -1562,11 +1821,11 @@
           "frequency_cap": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/FrequencyCap",
                 "description": "The per-patient message cap per fixed window, if any."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1577,11 +1836,11 @@
           "handoff_routing": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/RoutingPolicy",
+                "description": "The routing hand-offs opened for this application's patients are given;\n`null` opens them on the organization's default queue."
               },
               {
-                "$ref": "#/components/schemas/RoutingPolicy",
-                "description": "The routing hand-offs opened for this application's patients are given; `null` opens them on the organization's default queue."
+                "type": "null"
               }
             ]
           },
@@ -1597,7 +1856,7 @@
             "type": "integer"
           },
           "project_id": {
-            "description": "Policy scope; `null` is the organization-level active policy.",
+            "description": "The project the application belongs to, set when it is created. Its\nactive policy decides the application's turns, else the environment's\ndefault policy. `null` only for an older application in an environment\nthat had no project to give it.",
             "format": "int32",
             "type": [
               "integer",
@@ -1701,6 +1960,35 @@
         ],
         "type": "object"
       },
+      "ApplicationListItemDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ApplicationDto"
+          },
+          {
+            "properties": {
+              "decisions_7d": {
+                "description": "Decision records in the trailing seven days, every mode, status and\ndecision value counted. A retried turn counts once. Equals the observe\nreport's `totals.decisions` over the same seven days.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "last_decision_at": {
+                "description": "When the application's most recent decision record was made (for a\ntranscript turn, when the turn was sent). `null` when it has none.",
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "decisions_7d"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One item of the applications list: the application, and its decision\nactivity. Counts and a time only; no decision content."
+      },
       "CareHandoff": {
         "properties": {
           "application_id": {
@@ -1780,6 +2068,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "kind": {
+            "description": "What the item is for. `general` is the messaging and follow-up item\nevery automated source joins; staff-opened and discharge items carry\ntheir own kind. A patient has at most one active item of each kind.",
+            "type": "string"
+          },
           "organization_id": {
             "format": "int32",
             "type": "integer"
@@ -1794,6 +2086,14 @@
           "pauses_automation": {
             "description": "Whether this item also pauses automated messaging to its subject. `automation_resumed_at == null` alone says only that a person owns the item (one per patient, whichever kind it is). Automation is paused while `automation_resumed_at == null && pauses_automation`. A red flag, an exhausted budget, a missing policy, an unknown wire outcome and the Govern route-to-human path all pause; an item that only owes a patient a reply does not.",
             "type": "boolean"
+          },
+          "project_id": {
+            "description": "The project of the episode the hand-off was opened from. Null for a\nhand-off opened without an episode, and for one about an application's\npatient.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "queue_label": {
             "type": "string"
@@ -1824,10 +2124,10 @@
           "routing_snapshot": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Value"
               },
               {
-                "$ref": "#/components/schemas/Value"
+                "type": "null"
               }
             ]
           },
@@ -1856,6 +2156,7 @@
           "organization_id",
           "environment_id",
           "reason",
+          "kind",
           "state",
           "queue_label",
           "pauses_automation",
@@ -1906,6 +2207,14 @@
             "format": "int32",
             "type": "integer"
           },
+          "project_id": {
+            "description": "The project of the event's hand-off.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "source_key": {
             "type": "string"
           }
@@ -1946,15 +2255,15 @@
           "mode": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GovernMode"
               },
               {
-                "$ref": "#/components/schemas/GovernMode"
+                "type": "null"
               }
             ]
           },
           "project_id": {
-            "description": "The project whose active policy decides this channel; `null` means the\napplication's `project_id`.",
+            "description": "The project whose active policy decides this channel; `null` means the\napplication's own project. A policy belongs to one environment, so this\nmust be a live project of the organization in the application's\nenvironment; any other is a `404`. Set from the console only: a request\nmade with a key may send back the value already stored, and may not\nchange it.",
             "format": "int32",
             "type": [
               "integer",
@@ -1971,6 +2280,47 @@
         },
         "type": "object"
       },
+      "ClaimMatch": {
+        "description": "One term the gate matched in the evaluated text.\n\nThe evaluated text is the submitted content with leading and trailing\ncharacters of the Unicode `White_Space` property removed (not the set\nJavaScript's `trim` removes). Wherever a response carries that text, index\nit rather than re-trimming. One entry per occurrence: a phrase that appears\ntwice is two matches with two ranges.",
+        "properties": {
+          "list": {
+            "$ref": "#/components/schemas/MatchList",
+            "description": "The vocabulary the entry belongs to."
+          },
+          "phrase": {
+            "description": "The policy entry that matched, as stored (lower-case). The matched\ntext itself is at `range`, and may differ in case, inflection,\nhyphenation or apostrophe.",
+            "type": "string"
+          },
+          "range": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MatchRange",
+                "description": "Where the match sits in the evaluated text. Present on every `term`\nmatch; a client renders a message-level flag when it is absent."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "description": "The policy author's reason for the entry; null when it has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/MatchSource",
+            "description": "How the match was found."
+          }
+        },
+        "required": [
+          "phrase",
+          "list",
+          "source"
+        ],
+        "type": "object"
+      },
       "ConsentRequest": {
         "description": "`POST /api/v1/govern/patients/consent`. The reference travels in the body,\nnever in a path, so it is never in a request log.",
         "properties": {
@@ -1985,10 +2335,10 @@
           "channel": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GovernChannel"
               },
               {
-                "$ref": "#/components/schemas/GovernChannel"
+                "type": "null"
               }
             ]
           },
@@ -2040,7 +2390,7 @@
         "type": "object"
       },
       "Counts": {
-        "description": "Counts keyed by the raw gate decision (`allow`, `rewrite`,\n`block_and_review`, `policy_missing`, `unavailable`) for observe turns, and\nby the binding answer (`allow`, `hold`, `block`) for enforce turns.",
+        "description": "Counts keyed by the raw gate decision (`allow`, `flag`,\n`block_and_review`, `policy_missing`, `unavailable`; `rewrite` for turns\nrecorded before `flag` replaced it) for observe turns, and\nby the binding answer (`allow`, `hold`, `block`) for enforce turns. An\nobserve `flag` (or `rewrite`) for a clinician audience is counted as\n`flagged` instead: the clinician would have received the draft with its\nmatches.",
         "properties": {
           "enforced": {
             "additionalProperties": {
@@ -2070,6 +2420,7 @@
         "type": "object"
       },
       "CreateApplicationRequest": {
+        "description": "A new application. It belongs to the request's project, which the body\ndoes not name: the project selected in the console, or the key's own\nproject. That project's active policy, else the environment's default\npolicy, decides the application's turns.",
         "properties": {
           "channel_policies": {
             "additionalProperties": {
@@ -2086,44 +2437,37 @@
           "default_mode": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GovernMode"
               },
               {
-                "$ref": "#/components/schemas/GovernMode"
+                "type": "null"
               }
             ]
           },
           "frequency_cap": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/FrequencyCap",
+                "description": "The per-patient message cap per fixed window; none by default."
               },
               {
-                "$ref": "#/components/schemas/FrequencyCap",
-                "description": "The per-patient message cap per fixed window; none by\ndefault."
+                "type": "null"
               }
             ]
           },
           "handoff_routing": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/RoutingPolicy",
+                "description": "The routing a hand-off opened for this application's patients is given:\nqueue label, primary and backup staff, response and\nescalation seconds. Staff must be members of the organization."
               },
               {
-                "$ref": "#/components/schemas/RoutingPolicy",
-                "description": "The routing a hand-off opened for this application's patients is given: queue label, primary and backup staff, response and\nescalation seconds. Staff must be members of the organization."
+                "type": "null"
               }
             ]
           },
           "name": {
             "type": "string"
-          },
-          "project_id": {
-            "format": "int32",
-            "type": [
-              "integer",
-              "null"
-            ]
           },
           "red_flag_categories": {
             "description": "The red-flag categories the inbound screen runs with (`cardiac`,\n`respiratory`, `neuro_stroke`, `self_harm`). Default: all four.",
@@ -2214,7 +2558,7 @@
             ]
           },
           "deliverable_content": {
-            "description": "Clinician audience only: the gate's term substitution, when there is\none to deliver. Never present for a patient audience.",
+            "description": "Clinician audience only, on a `flagged` decision: the draft as\nevaluated, which is what to deliver. The service never rewrites a\ndraft, so this is your own content, trimmed. Never present for a\npatient audience.",
             "type": [
               "string",
               "null"
@@ -2229,14 +2573,18 @@
           "disclosure_required": {
             "type": "boolean"
           },
+          "flagged": {
+            "description": "The draft was delivered with flags: `allow` for a clinician audience\nunder a policy whose outcome is `flag`. Deliver the draft unchanged and\nshow the reader `matches`. `false` for a clean `allow` and for every\n`hold` and `block`.",
+            "type": "boolean"
+          },
           "handoff": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/HandoffRef",
                 "description": "The hand-off this decision opened or joined, with its current state."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2244,6 +2592,13 @@
             "description": "The red-flag rules the inbound matched; rule ids and categories only.",
             "items": {
               "$ref": "#/components/schemas/InboundFlag"
+            },
+            "type": "array"
+          },
+          "matches": {
+            "description": "Each term behind a violation, positioned in the evaluated text. One\nentry per occurrence, in reading order. Each carries the policy entry\n(`phrase`), the list it belongs to, the policy author's `reason` (null\nwhen the entry has none), how it was found (`source`; always `term`\ntoday) and `range`, the span in UTF-16 code units with `end` exclusive.\n\nThe evaluated text is the `content` you sent with leading and trailing\ncharacters of the Unicode `White_Space` property removed. That is not\nwhat JavaScript's `String.prototype.trim` removes (it also removes\nU+FEFF and keeps U+0085), so do not re-trim to find it: when\n`deliverable_content` is present it is exactly the evaluated text, and\n`deliverable_content.slice(range.start, range.end)` is the matched\ntext. Render a message-level flag for a match with no `range`. Empty on\ndecisions recorded before matches were.",
+            "items": {
+              "$ref": "#/components/schemas/ClaimMatch"
             },
             "type": "array"
           },
@@ -2266,21 +2621,21 @@
           "outcome": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/OutcomeView",
+                "description": "What became of the reply: the outcome events on record, in the order\nthey were recorded, and the `state` they add up to (`delivered`, else\n`superseded`, else `discarded`, else `failed`, else `released`). Null\nuntil the first event. `superseded` is recorded by the service when a\nlater turn names this decision in `supersedes` or retries it."
               },
               {
-                "$ref": "#/components/schemas/OutcomeView",
-                "description": "What the customer reported delivering, once it has."
+                "type": "null"
               }
             ]
           },
           "policy": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/PolicyRef"
               },
               {
-                "$ref": "#/components/schemas/PolicyRef"
+                "type": "null"
               }
             ]
           },
@@ -2303,13 +2658,25 @@
               "null"
             ]
           },
+          "retry_of": {
+            "description": "The decision this turn retries, when it is a retry. Null otherwise.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryable": {
+            "description": "Your application may write ONE new draft for this turn and evaluate\nit with `retry_of` set to this `decision_id`.\n\n`true` only when this turn was stopped in enforce mode, for a patient,\nbecause of the draft's own content (the `reasons` name a clinical\nclaim the program may not make, or a missing disclaimer), the stop\nclass is `uncertain`, the policy does not review every send, and the\nhold is still pending. It is `false` for a `never_sendable` stop, for\nevery stop about the patient rather than the draft (an opt-out, a\nconsent, a frequency cap, a missing disclosure), for a missing policy,\nfor a turn that is itself a retry at the platform's limit, for a turn\nwhose inbound routed the patient to a person, and once a reviewer has\nacted. Add the `reasons` and the policy's rules to your\nmodel's instructions; this service never writes the new draft.",
+            "type": "boolean"
+          },
           "review_state": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ReviewState"
               },
               {
-                "$ref": "#/components/schemas/ReviewState"
+                "type": "null"
               }
             ]
           },
@@ -2335,6 +2702,10 @@
             "description": "Send your holding line to this patient now.\n\nThis turn was stopped and the patient is waiting on a reply that is not coming, so the application sends the fixed text its clinical owner wrote: a person will reply, when, and what to do if it is urgent. **The contract says when, never what**: the text is the application's own, it is never model-written, and this service does not send it on the application's behalf.\n\n`false` whenever another send would be the wrong thing rather than merely unnecessary: an opt-out, a missing or revoked consent, and a frequency cap each stop the turn because this patient should not be messaged, and a holding line is a message. It is also `false` in observe, where nothing was stopped and the caller was told to deliver.\n\nOne per stopped turn: each `evaluate` is one turn, so a second stopped draft in the same conversation is a second turn with its own answer.",
             "type": "boolean"
           },
+          "show_hold_text": {
+            "description": "Show your hold text in place of the stopped draft.\n\n`true` when this turn was stopped (`hold` or `block` in enforce, not\nreleased or rejected) and: the audience is `patient` and the channel is\nin-session (`web_chat`, `app_message`, `voice`), where the patient is\nwaiting for the reply, whatever stopped the turn; or the audience is\n`patient`, the channel is outbound (`sms`, `email`) and\n`send_holding_line` is `true`; or the audience is `clinician`.\n\n`false` on an outbound channel when no holding line is owed (send\nnothing), on every `allow`, once a reviewer has released or rejected\nthe hold, once a retry of this turn or a turn that supersedes it has\nbeen accepted (that turn's own field answers), and always in observe.\nOn a `retryable` turn, evaluate the retry first and show the hold text\nonly if the retry is stopped too. On an in-session channel the hold\ntext is the one reply: do not send a separate holding line there.",
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/DecisionStatus"
           },
@@ -2345,8 +2716,31 @@
               "null"
             ]
           },
+          "superseded_by": {
+            "description": "The decision that replaced this one: the turn that named it in\n`supersedes`, or its retry. Null while nothing has replaced it. Read\nfrom the `superseded` event in `outcome`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "description": "The decisions this turn named in `supersedes` and replaced, in\nascending id order. Empty when it named none. The decision a retry\nreplaced is `retry_of`, not listed here.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "turn_id": {
             "type": "string"
+          },
+          "turn_ref": {
+            "description": "Your reference for the patient turn, as sent on `evaluate` (or, on a\nretry sent without one, the reference of the decision it retries).\nNull when none was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "webhook_deliveries": {
             "description": "The signed webhook deliveries about this decision: the\nlog, never the body.",
@@ -2356,7 +2750,7 @@
             "type": "array"
           },
           "would_have": {
-            "description": "Observe: the raw gate decision (`allow` | `rewrite` | `block_and_review`\n| `policy_missing`) or `unavailable`. Null in enforce.",
+            "description": "Observe: the raw gate decision (`allow` | `flag` | `block_and_review`\n| `policy_missing`) or `unavailable`. Null in enforce. Decisions\nrecorded before `flag` replaced `rewrite` keep `rewrite`.",
             "type": [
               "string",
               "null"
@@ -2377,8 +2771,13 @@
           "turn_id",
           "reasons",
           "detected_claims",
+          "matches",
+          "flagged",
           "disclosure_required",
           "send_holding_line",
+          "show_hold_text",
+          "retryable",
+          "supersedes",
           "route_to_human",
           "would_have_routed",
           "inbound_flags",
@@ -2442,6 +2841,7 @@
         "type": "object"
       },
       "EvaluateRequest": {
+        "description": "One turn to evaluate. A field this schema does not name is ignored, not\nrefused, so a misspelled `retry_of`, `turn_ref` or `supersedes` is a turn\nthat retries, groups and supersedes nothing.",
         "properties": {
           "application_id": {
             "description": "Optional; when present it must be the application the key is bound to.",
@@ -2467,21 +2867,21 @@
           "disclosure": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/DisclosureAttachment"
               },
               {
-                "$ref": "#/components/schemas/DisclosureAttachment"
+                "type": "null"
               }
             ]
           },
           "inbound": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/InboundMessage",
                 "description": "The patient's message this turn answers. Screened by the\ndeterministic red-flag floor with the application's categories; a\nmatch routes the patient to a person. Requires `patient_ref`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2491,11 +2891,11 @@
           "mode_hint": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/GovernMode",
                 "description": "Advisory. The application's configured mode decides; a hint that\ndisagrees is ignored."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2520,9 +2920,35 @@
               "null"
             ]
           },
+          "retry_of": {
+            "description": "The decision this turn retries: a new draft written because that\ndecision came back `retryable`. It must name a decision of this\napplication and this conversation whose view says `retryable: true`,\nand that has not been retried already; anything else is refused with\n`400`, except `409` for a second retry of the same decision and for a\nturn that was retryable until a reviewer released or rejected it, or\nuntil another turn named it in `supersedes`. Two requests for one retry\nunder one `turn_id` record it once: the second is answered as a replay.\nThe new draft is judged exactly as any other turn. Send it with a NEW\n`turn_id`. When the retry is `allow`, the hand-off the stopped turn\nopened is resolved with the disposition `resolved_by_retry`, provided\nthat turn opened it, nothing else has joined it and nobody has claimed\nit or acted on it.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "description": "The decisions this turn replaces, at most 8: earlier attempts at the\nsame patient turn that were never heard (a speculative reply the voice\nplatform discarded). Each must be a decision of this application and\nthis conversation, named once, and not the decision in `retry_of`\n(`400` otherwise). An enforce decision still being decided, a decision\nwith a `delivered` event, one a reviewer released or rejected, or one\nanother turn already superseded is a `409`. In the same step as this\nturn is recorded, each named decision leaves the review queue if it was\nheld, and its outcome records a `superseded` event naming this\ndecision. When this turn is `allow`, the hand-off a named stopped turn\nopened is resolved with the disposition `resolved_by_supersession`\n(`resolved_by_retry` when the turn in `retry_of` shares it), on the\nconditions a retry's is; otherwise it stays open with a note naming\nthis decision. A replay of this `turn_id` returns the stored decision\nand applies nothing again.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "turn_id": {
             "description": "The idempotency key per application: a replay returns the stored\ndecision. Must not start with `govern:`, which is reserved for the\nrows the platform writes.",
             "type": "string"
+          },
+          "turn_ref": {
+            "description": "Your stable reference for the patient turn this draft answers: the\nsame value on every speculative re-send and retry of that turn, so the\nattempts can be grouped. At most 128 printable characters. A retry\nsent without one takes the reference of the decision it retries.\nStored as sent; never evaluated.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2796,7 +3222,7 @@
             "type": "string"
           },
           "pauses_automation": {
-            "description": "Whether this hand-off also pauses automated messaging to the subject. `automation_resumed_at == null` says a person owns it;\nthis says whether the application should stop sending meanwhile. The\ntwo are read together: still paused is\n`automation_resumed_at == null && pauses_automation`.",
+            "description": "Whether this hand-off also pauses automated messaging to the subject.\n`automation_resumed_at == null` says a person owns it;\nthis says whether the application should stop sending meanwhile. The\ntwo are read together: still paused is\n`automation_resumed_at == null && pauses_automation`.",
             "type": "boolean"
           },
           "queue_label": {
@@ -2859,6 +3285,42 @@
           "received_at"
         ],
         "type": "object"
+      },
+      "MatchList": {
+        "description": "Which vocabulary a match came from.",
+        "enum": [
+          "prohibited_claims",
+          "requires_disclaimer_for",
+          "wellness_clinical_terms",
+          "medication_instructions"
+        ],
+        "type": "string"
+      },
+      "MatchRange": {
+        "description": "Where a match sits in the evaluated text, in UTF-16 code units (the unit\nof JavaScript string indices). `start` is inclusive and `end` exclusive, so\n`text.slice(start, end)` is the matched span.",
+        "properties": {
+          "end": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "type": "object"
+      },
+      "MatchSource": {
+        "description": "How a match was found.",
+        "enum": [
+          "term",
+          "semantic"
+        ],
+        "type": "string"
       },
       "MintedKeyDto": {
         "allOf": [
@@ -2957,6 +3419,12 @@
                 },
                 "type": "array"
               },
+              "by_stop_class": {
+                "items": {
+                  "$ref": "#/components/schemas/StopClassBreakdown"
+                },
+                "type": "array"
+              },
               "from": {
                 "format": "date-time",
                 "type": "string"
@@ -2980,6 +3448,7 @@
               "by_policy",
               "by_channel",
               "by_model",
+              "by_stop_class",
               "rates"
             ],
             "type": "object"
@@ -2999,10 +3468,10 @@
           "channel": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GovernChannel"
               },
               {
-                "$ref": "#/components/schemas/GovernChannel"
+                "type": "null"
               }
             ]
           },
@@ -3019,47 +3488,16 @@
         ],
         "type": "object"
       },
-      "OutcomeRequest": {
+      "OutcomeEvent": {
+        "description": "One event in a decision's outcome trail.",
         "properties": {
-          "delivered": {
-            "description": "The customer delivered a message for this turn.",
-            "type": "boolean"
-          },
-          "delivered_at": {
+          "at": {
+            "description": "When it happened, as the writer said.",
             "format": "date-time",
             "type": "string"
           },
-          "delivered_content_hash": {
-            "description": "SHA-256, hex, of the UTF-8 text delivered. Required when `delivered`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "delivery_ref": {
-            "description": "The customer's own reference for the delivery.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "delivered",
-          "delivered_at"
-        ],
-        "type": "object"
-      },
-      "OutcomeView": {
-        "properties": {
-          "delivered": {
-            "type": "boolean"
-          },
-          "delivered_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "delivered_content_hash": {
+          "content_hash": {
+            "description": "SHA-256 hex of the text; on `released` and `delivered` only.",
             "type": [
               "string",
               "null"
@@ -3072,21 +3510,123 @@
             ]
           },
           "hash_matches_release": {
-            "description": "Whether the delivered hash matches the content the record says was\ndeliverable. `null` when nothing was delivered or there was nothing to\ncompare against.",
+            "description": "Whether `content_hash` matches the content the record says was\ndeliverable. `null` with no hash, or when there was nothing to compare\nagainst. Computed when the event is recorded; a later release does not\nchange it.",
             "type": [
               "boolean",
               "null"
             ]
           },
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "recorded_at": {
+            "description": "When the service recorded it.",
             "format": "date-time",
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/OutcomeSource"
+          },
+          "superseded_by": {
+            "description": "The decision that replaced this one; on `superseded` only.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "delivered",
-          "delivered_at",
+          "kind",
+          "source",
+          "at",
           "recorded_at"
+        ],
+        "type": "object"
+      },
+      "OutcomeKind": {
+        "description": "What happened to a decision's reply: the kind of an event, and, for the\ntrail as a whole, its derived `state`.",
+        "enum": [
+          "released",
+          "delivered",
+          "discarded",
+          "superseded",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "OutcomeRequest": {
+        "properties": {
+          "at": {
+            "description": "When it happened.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "content_hash": {
+            "description": "SHA-256, hex, of the UTF-8 text released or delivered. Required for\n`released` and `delivered`; refused on any other kind.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery_ref": {
+            "description": "Your own reference for the delivery (a message id, a row id).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind",
+            "description": "`released`, `delivered`, `discarded` or `failed`. `superseded` is\nreserved for the service and refused here."
+          },
+          "reason": {
+            "description": "A short reason code, for example why a reply was discarded or why an\nattempt failed. Never message text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "at"
+        ],
+        "type": "object"
+      },
+      "OutcomeSource": {
+        "description": "Who wrote an event.",
+        "enum": [
+          "caller",
+          "retry",
+          "supersedes",
+          "channel"
+        ],
+        "type": "string"
+      },
+      "OutcomeView": {
+        "description": "A decision's outcome: the state its events add up to, and the events in\nthe order they were recorded.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/OutcomeEvent"
+            },
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OutcomeKind",
+            "description": "The kind that decides where the outcome stands, derived from the\nevents and never stored: `delivered` if a delivered event exists, else\n`superseded`, else `discarded`, else `failed`, else `released`."
+          }
+        },
+        "required": [
+          "state",
+          "events"
         ],
         "type": "object"
       },
@@ -3108,46 +3648,38 @@
           "default_mode": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GovernMode"
               },
               {
-                "$ref": "#/components/schemas/GovernMode"
+                "type": "null"
               }
             ]
           },
           "frequency_cap": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/FrequencyCap",
+                "description": "`null` removes the cap; omit to leave it unchanged."
               },
               {
-                "$ref": "#/components/schemas/FrequencyCap",
-                "description": "`null` removes the cap."
+                "type": "null"
               }
             ]
           },
           "handoff_routing": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RoutingPolicy",
                 "description": "`null` clears the routing; hand-offs then open with the\norganization's default queue and no deadlines."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "name": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "project_id": {
-            "description": "`null` clears the project scope back to the organization policy.",
-            "format": "int32",
-            "type": [
-              "integer",
               "null"
             ]
           },
@@ -3253,10 +3785,10 @@
           "frequency": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/FrequencyView"
               },
               {
-                "$ref": "#/components/schemas/FrequencyView"
+                "type": "null"
               }
             ]
           },
@@ -3374,9 +3906,26 @@
         "type": "object"
       },
       "Rates": {
-        "description": "Fractions in `[0, 1]`, never percentages: the share of decided observe\nturns the gate would have withheld, and of decided enforce turns it held.",
+        "description": "Fractions in `[0, 1]`, never percentages. Each is `null` when its\ndenominator is zero.",
         "properties": {
           "enforced_held": {
+            "description": "The share of answered enforce turns whose answer was not `allow`, over\n`totals.answered_enforce`. Turns the gate did not answer are on\nneither side of it.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unanswered": {
+            "description": "The share of every record in the window that the gate did not answer:\n`totals.unavailable` over `totals.decisions`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "would_have_flagged": {
+            "description": "The share of answered observe turns that would have been delivered\nwith flags: a `flag` for a clinician audience, over\n`totals.answered_observe`.",
             "format": "double",
             "type": [
               "number",
@@ -3384,6 +3933,7 @@
             ]
           },
           "would_have_withheld": {
+            "description": "The share of answered observe turns whose would-have answer was not\n`allow`, over `totals.answered_observe`. Turns the gate did not answer\nare on neither side of it. A `flag` for a clinician audience is not\nwithheld (the clinician receives the draft with its matches) and is\ncounted in `would_have_flagged` instead; a `flag` for a patient is\nwithheld.",
             "format": "double",
             "type": [
               "number",
@@ -3549,8 +4099,37 @@
         ],
         "type": "object"
       },
+      "StopClassBreakdown": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Counts"
+          },
+          {
+            "properties": {
+              "stop_class": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "The same counts, per stop class: `never_sendable` or `uncertain` for the\nturns that were stopped (in observe, that would have been stopped), and a\nbucket with a null class for the turns that were not, or not yet answered."
+      },
       "Totals": {
         "properties": {
+          "answered_enforce": {
+            "description": "Enforce records the gate answered: neither pending nor unavailable.\nThe denominator of `rates.enforced_held`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "answered_observe": {
+            "description": "Observe records the gate answered: neither pending nor unavailable.\nThe denominator of `rates.would_have_withheld`.",
+            "format": "int64",
+            "type": "integer"
+          },
           "decisions": {
             "description": "Every decision record in the window, any mode or status.",
             "format": "int64",
@@ -3574,6 +4153,17 @@
             "type": "integer"
           },
           "unavailable": {
+            "description": "Records the gate did not answer, in either mode. The caller received\nits mode's fallback; these records are in neither rate.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "would_have_flagged": {
+            "description": "Answered observe records that would have been delivered to a\nclinician with flags: the numerator of `rates.would_have_flagged`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "would_have_withheld": {
+            "description": "Answered observe records whose would-have answer withheld the draft:\nthe numerator of `rates.would_have_withheld`.",
             "format": "int64",
             "type": "integer"
           }
@@ -3584,7 +4174,11 @@
           "enforce",
           "pending",
           "unavailable",
-          "transcript"
+          "transcript",
+          "answered_observe",
+          "answered_enforce",
+          "would_have_withheld",
+          "would_have_flagged"
         ],
         "type": "object"
       },
@@ -3692,7 +4286,7 @@
               "format": "int64",
               "type": "integer"
             },
-            "description": "Raw gate decisions over the evaluated turns that are decided:\n`allow`, `rewrite`, `block_and_review`, `policy_missing`,\n`unavailable`.",
+            "description": "Raw gate decisions over the evaluated turns that are decided:\n`allow`, `flag` (`rewrite` before it replaced it), `block_and_review`, `policy_missing`,\n`unavailable`.",
             "propertyNames": {
               "type": "string"
             },
@@ -3785,21 +4379,21 @@
           "decision_status": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/DecisionStatus"
               },
               {
-                "$ref": "#/components/schemas/DecisionStatus"
+                "type": "null"
               }
             ]
           },
           "disposition": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/TurnDisposition",
                 "description": "Absent until the turn is processed."
+              },
+              {
+                "type": "null"
               }
             ]
           },

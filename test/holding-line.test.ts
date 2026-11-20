@@ -37,14 +37,9 @@ describe("the holding line: at most one per decision", () => {
     expect(replay.sendHoldingLine).toBe(false);
     // The API's own value is still there to read, unfiltered.
     expect(replay.record?.raw.send_holding_line).toBe(true);
-    // The replay's flush reports the first turn's holding line as sent...
-    const outcomes = calls.filter((c) => c.url.pathname.endsWith("/outcome"));
-    expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]!.json).toMatchObject({ delivered: true });
-    // ...and the replay itself is not queued as a second one: the decision is
-    // already reported, so nothing more is written for it.
-    await govern.flushPendingAcks();
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
+    // guard reports nothing for either read.
+    await govern.flushReports();
+    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(0);
   });
 
   it("guard and evaluate send model and modelVersion, and drop blanks", async () => {
@@ -107,10 +102,8 @@ describe("the holding line: at most one per decision", () => {
     expect(reply.showHoldText).toBe(false);
     expect(reply.text).toBe("");
     expect(reply.reasons).toContain("patient_state_unavailable");
-    await govern.flushPendingAcks();
-    const outcome = calls.find((c) => c.url.pathname.endsWith("/outcome"));
-    expect(outcome?.json).toMatchObject({ delivered: false });
-    expect(outcome?.json).not.toHaveProperty("delivered_content_hash");
+    await govern.flushReports();
+    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(0);
   });
 
   it("the stops that mean do-not-message never arm it", async () => {
@@ -155,7 +148,7 @@ describe("the holding line: at most one per decision", () => {
   it("an outcome report counts as having seen the decision", async () => {
     const { fetch } = fetchMock([() => jsonResponse(200, armedHold()), () => jsonResponse(200, armedHold())]);
     const govern = makeClient(fetch);
-    const reported = await govern.reportOutcome(DECISION_ID, { delivered: true, content: HOLD });
+    const reported = await govern.reportOutcome(DECISION_ID, { kind: "released", at: new Date(), content: HOLD });
     expect(reported.sendHoldingLine).toBe(false);
     expect((await govern.getDecision(DECISION_ID)).sendHoldingLine).toBe(false);
   });
@@ -194,5 +187,21 @@ describe("the decision view's new fields", () => {
     expect(allowed.model).toBeNull();
     expect(allowed.modelVersion).toBeNull();
     expect(allowed.sendHoldingLine).toBe(false);
+  });
+});
+
+describe("the holding line memory ignores the id's case", () => {
+  it("a replay that spells the decision id in other case does not re-arm it", async () => {
+    let evaluated = 0;
+    const { fetch } = fetchMock((call) => {
+      if (call.url.pathname.endsWith("/outcome")) return jsonResponse(201, decisionView({ decision: "hold" }));
+      evaluated++;
+      return jsonResponse(200, armedHold({ decision_id: evaluated === 1 ? DECISION_ID.toUpperCase() : DECISION_ID }));
+    });
+    const govern = makeClient(fetch);
+    const first = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
+    const replay = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
+    expect(first.sendHoldingLine).toBe(true);
+    expect(replay.sendHoldingLine).toBe(false);
   });
 });

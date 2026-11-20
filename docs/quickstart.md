@@ -121,8 +121,11 @@ const reply = await govern.guard(
   () => llm.chat(messages),
   { conversationId, turnId, channel: "web_chat", audience: "patient" },
 );
-await send(reply.text);
-await reply.ack();
+if (reply.text !== "") {
+  await send(reply.text);
+  // The record: what you wrote, hashed locally. No decision id when the API could not be reached.
+  if (reply.decisionId) await govern.reportOutcome(reply.decisionId, { kind: "released", at: new Date(), content: reply.text });
+}
 ```
 
 </details>
@@ -137,7 +140,7 @@ await govern.recordDisclosure({
 });
 ```
 
-The SDK attaches the returned `ref` to every later `evaluate` for that conversation, so you never handle it. Two things worth knowing rather than discovering: calling it again for the same conversation is safe and answers 200 describing **the evidence already on record** (`created: false`, and its channel and time, not the ones you just sent); and a `disclosure.ref` you attach by hand that is not this conversation's own reference is **ignored, never refused**, so a turn in a conversation that was never disclosed to still comes back `disclosureRequired`.
+The SDK attaches the returned `ref` to every later `evaluate` for that conversation, so you never handle it. Two things to know before they surprise you: calling it again for the same conversation is safe and answers 200 describing **the evidence already on record** (`created: false`, and its channel and time, not the ones you just sent); and a `disclosure.ref` you attach by hand that is not this conversation's own reference is **ignored, never refused**, so a turn in a conversation that was never disclosed to still comes back `disclosureRequired`.
 
 `conversationId` is bounded at 187 characters and `turnId` at 206, and `turnId` may not start with `govern:`. The SDK throws `GovernConfigError` before sending; see [Conversation and turn ids](../README.md#conversation-and-turn-ids).
 
@@ -165,7 +168,7 @@ Enforce mode: the gate held the draft. You just watched the gate hold a message.
 
 In observe mode the output reads `decision: allow` with `would have: block_and_review`: you were told allow, and the record shows what the gate would have done. That is the would-have block; two weeks of those is the observe report.
 
-Now send a normal message through your own application and check the console: the decision row appears, and `reply.ack()` (or the adapter) records what you delivered.
+Now send a normal message through your own application and check the console: the decision row appears, and `reportOutcome` (or the adapter) records the reply as `released` once it is written. When your channel confirms it reached the patient, record `delivered` the same way.
 
 ## If your first request fails
 
@@ -188,6 +191,7 @@ Now send a normal message through your own application and check the console: th
 | `status: not_evaluated`, `decisionId: null` | The channel is `off` for the application. | Set it to observe or enforce in the console. |
 | `decision: hold`, `reasons: [gate_unavailable]`, `degraded: true` | The SDK could not reach the API and the channel's last known mode is enforce (or unknown). | Check `ANYBIO_GOVERN_BASE_URL` (or the default origin), network egress, and `onEvent` for the underlying error. This one heals on its own once we answer again. |
 | `decision: hold`, `reasons: [client_misconfigured]`, `degraded: true` | The API answered and refused the call, and would refuse it again: a revoked or wrong key, a key not bound to the application, a request it will not accept. | Your own configuration. Read `status` on the `degraded` event: 401 or 403 is the credential, 400 is the request. **It will not heal**, so every message from this process holds until you fix it. |
+| `decision: hold`, `reasons: [turn_conflict]`, `degraded: true` | The API refused this turn with 409: the decision its `retryOf` names was already superseded, retried or delivered, or a reviewer acted on it first, or one its `supersedes` names was an enforce decision still being decided, or was delivered, reviewed, superseded or retried. | Nothing to fix: a race on this turn's state. Refresh the decision with `getDecision` and decide again. |
 | The test message was allowed | The policy does not name the claim the draft contains. | Check the prohibited claims on the policy attached to this channel, or pass `--content` with a draft it does name. |
 | `GovernTimeoutError` | One attempt exceeded `timeoutMs` (default 5000 ms). | Raise `timeoutMs`, and check egress latency; enforce answers within three seconds on the server side. That is the server's bound, not the call's: `timeoutMs` bounds one attempt, and with the default retries and a run of `Retry-After` answers `guard` can take about 75 s before it holds. Pass `ctx.signal` for a per-call bound, and see [the README](../README.md#when-the-api-cannot-be-reached). |
 | `routeToHuman: true` on an allowed reply | The inbound matched a red-flag rule; a hand-off task was opened for a person on your team. | Deliver `text` as usual, tell the patient a person will contact them, and record your own signal. Not a failure. |

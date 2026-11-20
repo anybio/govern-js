@@ -78,7 +78,7 @@ describe("route to a person", () => {
     expect(result.inboundFlags).toEqual([{ ruleId: "cardiac.chest_pain", category: "cardiac" }]);
     expect(result.degraded).toBe(false);
     expect(calls[0]!.json).toMatchObject({ inbound: { content: "I have chest pain" } });
-    await result.ack();
+    await govern.reportOutcome(result.decisionId!, { kind: "released", at: new Date(), content: result.text });
     expect(calls[1]!.url.pathname).toContain("/outcome");
   });
 
@@ -250,8 +250,8 @@ describe("govern.handoffs", () => {
   });
 
   it("a conflicting outcome report is also a GovernConflictError", async () => {
-    const { fetch } = fetchMock(() => jsonResponse(409, { kind: "CONFLICT_ERROR", error_message: "an outcome is already recorded for this decision" }));
-    await expect(makeClient(fetch).reportOutcome(DECISION_ID, { delivered: false })).rejects.toBeInstanceOf(GovernConflictError);
+    const { fetch } = fetchMock(() => jsonResponse(409, { kind: "CONFLICT_ERROR", error_message: "a different event of this kind is already recorded" }));
+    await expect(makeClient(fetch).reportOutcome(DECISION_ID, { kind: "discarded", at: new Date() })).rejects.toBeInstanceOf(GovernConflictError);
     await tick();
   });
 });

@@ -1,6 +1,6 @@
 # spec/
 
-`openapi.json` is the Govern surface of the AnyBio API: every path under `/api/v1/govern/` and the schemas they reference. Generated from the AnyBio Govern API specification, 2026-09-26.
+`openapi.json` is the Govern surface of the AnyBio API: every path under `/api/v1/govern/` and the schemas they reference. Generated from the AnyBio Govern API specification, 2026-11-19.
 
 - `pnpm generate:types` writes `src/generated/openapi.ts` from it.
 - `test/spec.test.ts` fails when the committed types differ from what the document generates, checks that every route `Govern` calls exists in the document, and holds the reason codes in `src/types.ts` to the API's set.

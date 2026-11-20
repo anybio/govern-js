@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { GovernConfigError } from "../src/errors";
 import { GovernCallbackHandler, RESPONSE_METADATA_KEY, governed } from "../src/langchain";
-import { DRAFT, HOLD, decisionView, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
+import { DRAFT, HOLD, decisionView, fetchMock, jsonResponse, makeClient } from "./helpers";
 
 const model = RunnableLambda.from(async (_input: string) => new AIMessage(DRAFT));
 
@@ -20,7 +20,7 @@ function textOf(output: unknown): string {
 
 describe("governed", () => {
   it("returns the original AIMessage on allow", async () => {
-    const { fetch, calls } = fetchMock([
+    const { fetch, calls, waitForCall } = fetchMock([
       () => jsonResponse(200, decisionView({ decision: "allow" })),
       () => jsonResponse(201, decisionView({ decision: "allow" })),
     ]);
@@ -29,8 +29,7 @@ describe("governed", () => {
     expect(out).toBeInstanceOf(AIMessage);
     expect(textOf(out)).toBe(DRAFT);
     expect(calls[0]!.json).toMatchObject({ conversation_id: "conv-1", content: DRAFT, channel: "web_chat", audience: "patient" });
-    await tick();
-    expect(calls[1]!.url.pathname).toContain("/outcome");
+    expect((await waitForCall("outcome")).index).toBe(1);
   });
 
   it("replaces the AIMessage with the hold message on hold and records the decision in response_metadata", async () => {

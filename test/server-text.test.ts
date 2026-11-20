@@ -95,16 +95,20 @@ describe("a 400 that echoes the draft", () => {
     expect(degraded).toMatchObject({ status: 400, cause: "client_misconfigured" });
   });
 
-  it("does not put it in the auto-ack error event either", async () => {
+  it("does not put it in an outcome report's error either", async () => {
     const events: GovernEvent[] = [];
     const { fetch } = fetchMock([
       () => jsonResponse(200, decisionView()),
       echoing400,
     ]);
     const govern = makeClient(fetch, { maxRetries: 0, onEvent: (e) => events.push(e) });
-    await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    await govern.flushPendingAcks();
-    expect(events).toContainEqual(expect.objectContaining({ type: "error", operation: "auto_ack" }));
+    const reply = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
+    const error = await govern.reportOutcome(reply.decisionId!, { kind: "released", at: new Date(), content: reply.text }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error!.message).not.toContain(DRAFT);
     expect(JSON.stringify(events)).not.toContain(DRAFT);
   });
 });

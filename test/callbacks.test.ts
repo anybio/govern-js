@@ -2,8 +2,8 @@
  * A caller's callback cannot change a verdict.
  *
  * `onEvent` is telemetry. If a throw from it escapes, the caller with the
- * obvious shape — `try { const r = await guard(...); send(r.text) } catch {
- * send(draft) }` — fails open, which is the one thing this package exists to
+ * obvious shape, `try { const r = await guard(...); send(r.text) } catch {
+ * send(draft) }`, fails open, which is the one thing this package exists to
  * prevent. These tests call `guard` with callbacks that throw at every point
  * the SDK emits an event and assert the verdict is the one the gate gave.
  */
@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { REASONS } from "../src/types";
 import type { GovernEvent } from "../src/types";
+import { withGovern } from "../src/vercel-ai";
 import { DRAFT, HOLD, decisionView, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
 
 const ctx = { conversationId: "conv-1", channel: "web_chat" as const, audience: "patient" as const };
@@ -78,7 +79,7 @@ describe("a throwing onEvent cannot alter the decision", () => {
     ]);
     const govern = makeClient(fetch, { onEvent });
     const reply = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    await reply.ack();
+    await govern.reportOutcome(reply.decisionId!, { kind: "released", at: new Date(), content: reply.text });
     expect(calls[1]!.url.pathname).toContain("/outcome");
   });
 
@@ -105,18 +106,30 @@ describe("a throwing onEvent cannot alter the decision", () => {
     expect(calls).toBeLessThan(20);
   });
 
-  it("a throw from the auto-ack's own events does not lose the next turn's decision", async () => {
+  it("a throw from an adapter report's own events does not lose the next turn's decision", async () => {
     const { onEvent } = throwingOn("outcome", "error");
-    const { fetch, calls } = fetchMock([
+    const { fetch, calls, waitForCall } = fetchMock([
       () => jsonResponse(200, decisionView({ decision_id: "11111111-1111-4111-8111-111111111111" })),
       () => jsonResponse(201, decisionView({ decision_id: "11111111-1111-4111-8111-111111111111" })),
       () => jsonResponse(200, decisionView({ decision_id: "22222222-2222-4222-8222-222222222222" })),
     ]);
     const govern = makeClient(fetch, { onEvent });
-    await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
+    const errors: unknown[] = [];
+    const middleware = withGovern({ govern, channel: "web_chat", audience: "patient", onError: (error) => errors.push(error) });
+    type Args = Parameters<NonNullable<typeof middleware.wrapGenerate>>[0];
+    const generated = { content: [{ type: "text", text: DRAFT }], finishReason: { unified: "stop", raw: "stop" }, usage: {}, warnings: [] };
+    await middleware.wrapGenerate!({
+      doGenerate: async () => generated as unknown as Awaited<ReturnType<Args["doGenerate"]>>,
+      doStream: async () => ({ stream: new ReadableStream() }) as unknown as Awaited<ReturnType<Args["doStream"]>>,
+      params: { prompt: [], providerOptions: { anybioGovern: { conversationId: "conv-1", turnId: "turn-1" } } } as unknown as Args["params"],
+      model: {} as Args["model"],
+    });
+    await waitForCall("outcome");
+    await govern.flushReports();
     const second = await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
     await tick();
     expect(second.decisionId).toBe("22222222-2222-4222-8222-222222222222");
     expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 });
