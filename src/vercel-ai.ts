@@ -13,11 +13,11 @@
  *   unreachable in enforce). No token reaches the caller before the decision.
  * - clinician: pass through with a trailing evaluation. Tokens stream as
  *   they arrive; after the stream ends the full text is evaluated and the
- *   outcome recorded with what actually went out.
+ *   text that went out recorded as `released`.
  *
  * What replaces a held draft follows `reply.showHoldText`, the same rule as
- * `guard`: on an in-session channel (`web_chat`, `app_message`) a single text
- * block with the hold message; on an outbound channel (`sms`, `voice`,
+ * `guard`: on an in-session channel (`web_chat`, `app_message`, `voice`) a
+ * single text block with the hold message; on an outbound channel (`sms`,
  * `email`, or one this version does not know) the hold message only when a
  * holding line is owed, and otherwise no text at all, so a caller that sends
  * whatever the model returns sends nothing.
@@ -32,15 +32,36 @@
  * example `gpt-4o-2024-08-06`) when it reports one. Either can be overridden
  * in the options.
  *
+ * Two signals, kept apart on purpose. The generation's own `abortSignal` is
+ * the caller's cancel, and it never becomes a hold: a turn cancelled before
+ * the gate is not gated, and a stream cancelled while the gate decides is
+ * recorded as `discarded`. `providerOptions.anybioGovern.signal` (or the
+ * `signal` option) bounds only the gate call, and its abort is an answer:
+ * the rule for an unreachable API decides what is delivered.
+ *
  * The middleware imports only types from `ai`; there is no runtime coupling.
  */
 
 import type { LanguageModelMiddleware } from "ai";
 
-import { Govern, type GovernOptions } from "./client";
+import {
+  callSafely,
+  deliveredOutcome,
+  delivers,
+  failureReporter,
+  handedOver,
+  hasOutcomeOnRecord,
+  postReport,
+  type AdapterReport,
+  type DeliveredText,
+} from "./adapters";
+import { Govern, requireRetryOf, requireTurnRef, supersedesOf, type GovernOptions } from "./client";
 import { randomId } from "./crypto";
 import { GovernConfigError } from "./errors";
-import type { Audience, Channel, GuardContext, GuardResult, InboundMessage } from "./types";
+import { requireAbortSignal } from "./signal";
+import { OUTCOME_REASONS, type Audience, type Channel, type GuardContext, type GuardResult, type InboundMessage } from "./types";
+
+export type { DeliveredMessage, DeliveredText } from "./adapters";
 
 type WrapGenerate = NonNullable<LanguageModelMiddleware["wrapGenerate"]>;
 type WrapArgs = Parameters<WrapGenerate>[0];
@@ -61,8 +82,30 @@ export const PROVIDER_METADATA_KEY = "anybioGovern";
 export interface GovernCallOptions {
   conversationId?: string;
   turnId?: string;
+  /** The decision this call's turn retries. See `EvaluateInput.retryOf`. `null` is no retry. */
+  retryOf?: string | null;
+  /** Your stable reference for the patient turn. See `EvaluateInput.turnRef`. `null` is none. */
+  turnRef?: string | null;
+  /** The decisions this call's turn replaces. See `EvaluateInput.supersedes`. `null` is none. */
+  supersedes?: string[] | null;
   patientRef?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Bounds the gate call for this call; see the `signal` option for what an
+   * abort does. The more specific bound, so it wins over the option. `ai`
+   * types `providerOptions` as JSON, so a signal here needs a cast at the
+   * call site. `null` is no bound. A value that is not a signal is refused
+   * with `GovernConfigError` when the call starts, before the model runs,
+   * on every audience: it is known then, so the call fails early.
+   *
+   * Its clock starts when you create it, not when the gate call starts: one
+   * made before the call bounds the generation and the gate together, and on
+   * a clinician stream it has run through the whole stream before the
+   * trailing gate call begins. For a bound measured from the gate call, use
+   * the `signal` option, `() => AbortSignal.timeout(ms)`, which is called
+   * when the gate call starts.
+   */
+  signal?: AbortSignal | null;
 }
 
 type Resolvable<T> = T | ((params: LanguageModelCallOptions) => T | undefined);
@@ -82,15 +125,105 @@ export interface WithGovernOptions {
   model?: Resolvable<string>;
   /** The model version recorded on each decision. Default: the model id the provider reported on the response, when it reports one. */
   modelVersion?: Resolvable<string>;
-  /** The patient's inbound message, for the red-flag screen. */
+  /**
+   * The patient's inbound message, for the red-flag screen. Requires
+   * `patientRef` (the option, or `providerOptions.anybioGovern.patientRef`).
+   */
   inbound?: (params: LanguageModelCallOptions) => InboundMessage | undefined;
   /** Overrides the client's hold message. */
   holdMessage?: string;
-  /** Report the outcome as delivered with the text the middleware let through. Default true. */
+  /**
+   * Bounds the gate call: a function of the call params that returns a
+   * signal for this call. It is called when the gate call starts, and only
+   * when the call carries no `providerOptions.anybioGovern.signal`, which is
+   * the more specific bound. A timeout made here, `() =>
+   * AbortSignal.timeout(800)`, bounds the gate call alone. A function, never
+   * a signal: one signal shared by every call would hold every call after it
+   * fired, so a bare signal is refused at construction. It may return
+   * `undefined` or `null` for no bound; a value it returns that is not a
+   * signal is refused with `GovernConfigError` when the gate call starts,
+   * which on a clinician stream is the trailing gate call after the text went
+   * out, so there the error goes to `onError`.
+   *
+   * When it aborts, before or during the gate call, the call ends (no retry
+   * follows) and the rule for an unreachable API applies: in enforce the draft
+   * is held, with the hold message where `showHoldText` is true and no text
+   * where it is false; in observe the draft goes out flagged `degraded`. The
+   * reply carries `reasons: ["gate_unavailable"]` and no decision id, and the
+   * client emits its `degraded` event. It travels to `guard` as
+   * `gateSignal`, which answers this way; the call's own `signal` would be
+   * rethrown instead, and the middleware owns the delivery.
+   *
+   * A clinician stream is the exception: its text has gone out before the
+   * trailing gate call starts, so nothing can be withheld. An abort there
+   * goes to `onError`, `onDecision` is not called, and nothing is recorded.
+   *
+   * Not the generation's `abortSignal`, which is the caller's cancel and is
+   * never read here: wiring it in would turn a cancel into a hold.
+   */
+  signal?: (params: LanguageModelCallOptions) => AbortSignal | null | undefined;
+  /**
+   * Record the write-time outcome once per decision, as the reply is handed
+   * over: `released` with the hash of the text the middleware let through,
+   * or of what `deliveredText` says went out; `discarded` when nothing went
+   * out. Default true.
+   *
+   * With false the middleware reports nothing, and the outcome is yours
+   * alone to record with `govern.reportOutcome`. A decision you never report
+   * stays without an outcome.
+   */
   reportOutcome?: boolean;
+  /**
+   * What actually went out, for the outcome report. Without it the middleware
+   * records `released` with the text it let through, or `discarded`
+   * (`nothing_to_send`) when it let nothing through. With it, the middleware
+   * asks: return the text you wrote to the channel (it is hashed locally;
+   * only the hash is sent), `{ text, deliveredAt?, deliveryRef? }` to say
+   * when it went out (for a voice line, when it started to be spoken) and
+   * under which reference, or `null` when nothing went out. Text is recorded
+   * as `released`, a shown hold message included; `null` and empty text as
+   * `discarded` (`nothing_delivered`).
+   *
+   * Called once per decision with the same info `onDecision` receives, when
+   * the middleware hands the reply over: as `wrapGenerate` returns, and after
+   * a buffered stream closes or a clinician stream's trailing decision lands.
+   * The middleware does not wait for it before delivering. Return a promise
+   * to answer once you know; its answer is the decision's one report,
+   * whenever it settles. A decision the hook fails to answer stays without
+   * an outcome.
+   *
+   * A decision a retry or a later turn's `supersedes` replaced is recorded
+   * like any other, from the hook's answer: on a retried hold nothing was
+   * shown, so answer `null` and it is `discarded`. The API adds its own
+   * `superseded` event when it applies the retry or the list. On a turn you
+   * retry, settle the hook after the retry's gate call: what the stopped
+   * turn's answer is (nothing, or the hold text after a refused retry) is
+   * known only once the retry is accepted or refused, and the SDK cannot
+   * order it for you.
+   *
+   * Never called with `reportOutcome: false`, for a reply with no decision id
+   * (the API unreachable, or the channel off), for a replayed decision whose
+   * outcome already has a state on record, or for a stream cancelled while
+   * the gate was deciding (recorded as `discarded`, `cancelled`). A throw, a
+   * rejection or any other value goes to `onError`, and nothing is recorded
+   * for that decision.
+   *
+   * A later event (`delivered` once the channel confirms, `failed`) is
+   * yours to record with `govern.reportOutcome`.
+   */
+  deliveredText?: (info: GovernDecisionInfo) => DeliveredText | Promise<DeliveredText>;
   /** Called with every decision, after the reply is determined. */
   onDecision?: (info: GovernDecisionInfo) => void;
-  /** Called when reporting an outcome fails. Delivery is unaffected. */
+  /**
+   * Called when recording an outcome fails, and with a failing
+   * `deliveredText`. Delivery is unaffected; nothing retries a failed report
+   * after the transport's own retries. A report that did not land arrives as
+   * a `GovernReportError`: the decision id and the event exactly as sent
+   * (`kind`, `at`, `contentHash`, `deliveryRef`, `reason`), to send again
+   * with `govern.reportOutcome`, and the failure on `cause` (a
+   * `GovernConflictError` when a different event of that kind is already on
+   * record). A hook that throws or answers something else arrives as itself.
+   */
   onError?: (error: unknown) => void;
 }
 
@@ -106,6 +239,9 @@ export interface GovernDecisionInfo {
 interface ResolvedContext {
   conversationId: string;
   turnId: string;
+  retryOf: string | undefined;
+  turnRef: string | undefined;
+  supersedes: string[] | undefined;
   patientRef: string | undefined;
   metadata: Record<string, unknown> | undefined;
   inbound: InboundMessage | undefined;
@@ -113,6 +249,11 @@ interface ResolvedContext {
   model: string | undefined;
   /** From the options; when absent, the provider's reported model id is used. */
   modelVersion: string | undefined;
+  /**
+   * The bound for the gate call, read when the call starts:
+   * `providerOptions.anybioGovern.signal`, else the `signal` option.
+   */
+  gateSignal: () => AbortSignal | undefined;
 }
 
 export function withGovern(options: WithGovernOptions): LanguageModelMiddleware {
@@ -120,16 +261,34 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
   if (!options.channel || !options.audience) {
     throw new GovernConfigError("withGovern: `channel` and `audience` are required.");
   }
+  if (options.holdMessage !== undefined && (typeof options.holdMessage !== "string" || options.holdMessage.trim() === "")) {
+    throw new GovernConfigError("withGovern: `holdMessage` must be a non-empty string: it is the text a held patient sees in place of the reply.");
+  }
+  if (options.signal !== undefined && typeof options.signal !== "function") {
+    throw new GovernConfigError(
+      "withGovern: `signal` must be a function of the call params that returns an AbortSignal for that call. One signal shared by every call would hold every call after it fired. Pass a per-call signal as `providerOptions.anybioGovern.signal`, or `signal: () => AbortSignal.timeout(ms)`.",
+    );
+  }
   const govern = resolveGovern(options.govern);
   const reportOutcome = options.reportOutcome ?? true;
 
-  const guardContext = (ctx: ResolvedContext, reportedModelId?: string): GuardContext => {
+  /**
+   * `bound` says how the per-call signal travels. `"gate"` (every path that
+   * has not delivered yet) passes it as `gateSignal`, so an abort is the
+   * unreachable-API rule. `"call"` (a clinician stream's trailing gate call,
+   * after its text went out) passes it as `signal`, so an abort is rethrown
+   * to `onError` and recorded as nothing: there is nothing left to withhold.
+   */
+  const guardContext = (ctx: ResolvedContext, reportedModelId: string | undefined, bound: "gate" | "call"): GuardContext => {
     const guard: GuardContext = {
       conversationId: ctx.conversationId,
       turnId: ctx.turnId,
       channel: options.channel,
       audience: options.audience,
     };
+    if (ctx.retryOf !== undefined) guard.retryOf = ctx.retryOf;
+    if (ctx.turnRef !== undefined) guard.turnRef = ctx.turnRef;
+    if (ctx.supersedes !== undefined) guard.supersedes = ctx.supersedes;
     if (ctx.patientRef !== undefined) guard.patientRef = ctx.patientRef;
     if (ctx.metadata !== undefined) guard.metadata = ctx.metadata;
     if (ctx.inbound !== undefined) guard.inbound = ctx.inbound;
@@ -137,6 +296,11 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
     if (ctx.model !== undefined) guard.model = ctx.model;
     const modelVersion = ctx.modelVersion ?? reportedModelId;
     if (modelVersion !== undefined) guard.modelVersion = modelVersion;
+    const signal = ctx.gateSignal();
+    if (signal !== undefined) {
+      if (bound === "gate") guard.gateSignal = signal;
+      else guard.signal = signal;
+    }
     return guard;
   };
 
@@ -145,35 +309,67 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
    * promises and stream callbacks, where a throw is an unhandled rejection, so
    * it is isolated too.
    */
-  const reportFailure = (error: unknown): void => {
-    try {
-      options.onError?.(error);
-    } catch {
-      // A failure hook that fails has nowhere left to report.
-    }
+  const reportFailure = failureReporter(options.onError);
+
+  /**
+   * `onDecision` is telemetry: a throw from it must not stall or break the
+   * stream. Returns the info it was given, which `report` hands to
+   * `deliveredText` so both hooks see the same object.
+   */
+  const notify = (reply: GuardResult, ctx: ResolvedContext, streamed: boolean): GovernDecisionInfo => {
+    const info: GovernDecisionInfo = {
+      reply,
+      conversationId: ctx.conversationId,
+      turnId: ctx.turnId,
+      channel: options.channel,
+      audience: options.audience,
+      streamed,
+    };
+    callSafely(() => options.onDecision?.(info), reportFailure);
+    return info;
   };
 
-  /** `onDecision` is telemetry: a throw from it must not stall or break the stream. */
-  const notify = (reply: GuardResult, ctx: ResolvedContext, streamed: boolean): void => {
-    try {
-      options.onDecision?.({
-        reply,
-        conversationId: ctx.conversationId,
-        turnId: ctx.turnId,
-        channel: options.channel,
-        audience: options.audience,
-        streamed,
-      });
-    } catch (error) {
-      reportFailure(error);
+  /**
+   * The one outcome report for a decision, made as the reply is handed over.
+   * Without a hook it is `went`: the text the reply handed over by default
+   * (`released`, or `discarded` with `nothing_to_send` when it handed over
+   * none); a call site passes other text where other text went out (a
+   * clinician stream that streamed the draft beside a substitution), or
+   * `{ reason }` where nothing went out. A caller's `deliveredText` answers
+   * in its place. Nothing here delays delivery: the report is a floating
+   * promise whose every failure goes to `onError`.
+   */
+  const report = (info: GovernDecisionInfo, went?: string | { reason: string }): void => {
+    if (!reportOutcome) return;
+    const { reply } = info;
+    // Nothing to record: no decision, or a replayed one whose outcome is
+    // already on record.
+    const decisionId = reply.decisionId;
+    if (decisionId === null || hasOutcomeOnRecord(reply.record)) return;
+    const hook = options.deliveredText;
+    if (hook === undefined) {
+      const outcome: AdapterReport =
+        went === undefined
+          ? handedOver(delivers(reply) ? reply.text : null, OUTCOME_REASONS.nothingToSend)
+          : typeof went === "string"
+            ? handedOver(went, OUTCOME_REASONS.nothingToSend)
+            : { kind: "discarded", reason: went.reason };
+      void postReport(govern, decisionId, outcome, reportFailure);
+      return;
     }
+    deliveredOutcome(hook, info)
+      .then((outcome) => postReport(govern, decisionId, outcome, reportFailure))
+      .catch(reportFailure);
   };
 
-  /** `delivered` is the text that went out, or null when nothing did. */
-  const report = (reply: GuardResult, delivered: string | null): void => {
-    if (reportOutcome) {
-      reply.ack(delivered === null ? { delivered: false } : { delivered: true, content: delivered }).catch(reportFailure);
-    }
+  /**
+   * A decision whose reply reached no one because the caller cancelled while
+   * the gate decided: `discarded`, `cancelled`, without asking a hook (the
+   * caller was never handed the reply).
+   */
+  const reportCancelled = (reply: GuardResult): void => {
+    if (!reportOutcome || reply.decisionId === null || hasOutcomeOnRecord(reply.record)) return;
+    void postReport(govern, reply.decisionId, { kind: "discarded", reason: OUTCOME_REASONS.cancelled }, reportFailure);
   };
 
   return {
@@ -184,7 +380,7 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
       const result = await doGenerate();
       const draft = textOf(result.content);
       if (draft.length === 0) return result;
-      const reply = await govern.guard(() => draft, guardContext(ctx, nonBlank(result.response?.modelId)));
+      const reply = await govern.guard(() => draft, guardContext(ctx, nonBlank(result.response?.modelId), "gate"));
       const metadata = governMetadata(reply);
       const providerMetadata: ProviderMetadata = {
         ...(result.providerMetadata ?? {}),
@@ -198,8 +394,8 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
         !reply.held && reply.text === draft
           ? { ...result, providerMetadata }
           : { ...result, content: replacementContent(reply), providerMetadata };
-      notify(reply, ctx, false);
-      report(reply, delivers(reply) ? reply.text : null);
+      const info = notify(reply, ctx, false);
+      report(info);
       return gated;
     },
 
@@ -254,7 +450,7 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
 
             let reply: GuardResult;
             try {
-              reply = await govern.guard(() => text, guardContext(ctx, reportedModelId(parts)));
+              reply = await govern.guard(() => text, guardContext(ctx, reportedModelId(parts), "gate"));
             } catch (error) {
               if (!cancelled) controller.error(error);
               return;
@@ -262,37 +458,51 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
 
             if (cancelled) {
               // Cancelled while the gate was deciding: the decision exists and
-              // nothing went out. Report that, or the next turn on this
-              // conversation auto-acks it as delivered.
-              if (reportOutcome) reply.ack({ delivered: false }).catch(reportFailure);
+              // nothing went out. Recorded as exactly that.
+              reportCancelled(reply);
               return;
             }
 
-            notify(reply, ctx, true);
+            const info = notify(reply, ctx, true);
+            if (cancelled) {
+              // Cancelled from inside `onDecision` (a caller sending its own
+              // line on a hold): nothing of this stream reached the caller.
+              // Discarded, or the hook's answer when there is one: the caller
+              // has had the decision, and its hook says what it sent.
+              report(info, { reason: OUTCOME_REASONS.cancelled });
+              return;
+            }
             const metadata = governMetadata(reply);
 
-            // Same rule as wrapGenerate: a held turn replays nothing, however
-            // closely the hold message resembles what the model wrote.
-            if (!reply.held && reply.text === text) {
-              for (const part of parts) controller.enqueue(part.type === "finish" ? withMetadata(part, metadata) : part);
-            } else {
-              const id = randomId();
-              for (const part of parts) {
-                if (part.type === "stream-start" || part.type === "response-metadata") controller.enqueue(part);
+            // Exactly one report, whether or not handing over throws: a throw
+            // here means the caller did not get the reply.
+            let closed = false;
+            try {
+              // Same rule as wrapGenerate: a held turn replays nothing, however
+              // closely the hold message resembles what the model wrote.
+              if (!reply.held && reply.text === text) {
+                for (const part of parts) controller.enqueue(part.type === "finish" ? withMetadata(part, metadata) : part);
+              } else {
+                const id = randomId();
+                for (const part of parts) {
+                  if (part.type === "stream-start" || part.type === "response-metadata") controller.enqueue(part);
+                }
+                // An outbound hold with no holding line owed emits no text at all.
+                if (delivers(reply)) {
+                  controller.enqueue({ type: "text-start", id });
+                  controller.enqueue({ type: "text-delta", id, delta: reply.text });
+                  controller.enqueue({ type: "text-end", id });
+                }
+                for (const part of parts) {
+                  if (part.type === "finish") controller.enqueue(withMetadata(part, metadata));
+                  else if (part.type === "error") controller.enqueue(part);
+                }
               }
-              // An outbound hold with no holding line owed emits no text at all.
-              if (delivers(reply)) {
-                controller.enqueue({ type: "text-start", id });
-                controller.enqueue({ type: "text-delta", id, delta: reply.text });
-                controller.enqueue({ type: "text-end", id });
-              }
-              for (const part of parts) {
-                if (part.type === "finish") controller.enqueue(withMetadata(part, metadata));
-                else if (part.type === "error") controller.enqueue(part);
-              }
+              controller.close();
+              closed = true;
+            } finally {
+              report(info, closed ? undefined : { reason: OUTCOME_REASONS.notHandedOver });
             }
-            controller.close();
-            report(reply, delivers(reply) ? reply.text : null);
           } catch (error) {
             // Whatever it was, the stream must end: one that neither closes nor
             // errors holds the caller's response open for ever.
@@ -328,12 +538,22 @@ export function withGovern(options: WithGovernOptions): LanguageModelMiddleware 
         flush() {
           if (text.length === 0) return;
           const delivered = text;
+          // The text has gone out, so an abort of the bound cannot withhold
+          // anything and must not be recorded as a hold: the bound travels as
+          // the call's own signal, and its abort goes to `onError` with every
+          // other failure here.
+          let gate: GuardContext;
+          try {
+            gate = guardContext(ctx, modelId, "call");
+          } catch (error) {
+            // A bound that is not a signal, found after the text went out.
+            reportFailure(error);
+            return;
+          }
           govern
-            .guard(() => delivered, guardContext(ctx, modelId))
-            .then((reply) => {
-              notify(reply, ctx, true);
-              report(reply, delivered);
-            })
+            .guard(() => delivered, gate)
+            // What went out is the streamed text, whatever the decision says.
+            .then((reply) => report(notify(reply, ctx, true), delivered))
             .catch(reportFailure);
         },
       }),
@@ -359,14 +579,24 @@ function resolveContext(
     );
   }
   const turnId = resolve(options.turnId, params) ?? perCall.turnId ?? randomId();
+  // Before the model runs, as the conversation id is. `null` is none.
+  const retryOf = perCall.retryOf ?? undefined;
+  if (retryOf !== undefined) requireRetryOf(retryOf, "withGovern: `providerOptions.anybioGovern.retryOf`");
+  const turnRef = perCall.turnRef ?? undefined;
+  if (turnRef !== undefined) requireTurnRef(turnRef, "withGovern: `providerOptions.anybioGovern.turnRef`");
+  const supersedes = supersedesOf(perCall.supersedes, "withGovern: `providerOptions.anybioGovern.supersedes`");
   return {
     conversationId,
     turnId,
+    retryOf,
+    turnRef,
+    supersedes,
     patientRef: resolve(options.patientRef, params) ?? perCall.patientRef,
     metadata: resolve(options.metadata, params) ?? perCall.metadata,
     inbound: options.inbound?.(params),
     model: nonBlank(resolve(options.model, params)) ?? nonBlank(model?.modelId),
     modelVersion: nonBlank(resolve(options.modelVersion, params)),
+    gateSignal: () => perCall.signal ?? requireAbortSignal(options.signal?.(params), "withGovern: the value the `signal` option returned"),
   };
 }
 
@@ -389,10 +619,17 @@ function readCallOptions(params: LanguageModelCallOptions): GovernCallOptions {
   const out: GovernCallOptions = {};
   if (typeof raw.conversationId === "string") out.conversationId = raw.conversationId;
   if (typeof raw.turnId === "string") out.turnId = raw.turnId;
+  // Checked in `resolveContext`, before the model runs. `null` is none.
+  if (raw.retryOf !== undefined && raw.retryOf !== null) out.retryOf = raw.retryOf as string;
+  if (raw.turnRef !== undefined && raw.turnRef !== null) out.turnRef = raw.turnRef as string;
+  if (raw.supersedes !== undefined && raw.supersedes !== null) out.supersedes = raw.supersedes as string[];
   if (typeof raw.patientRef === "string") out.patientRef = raw.patientRef;
   if (raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)) {
     out.metadata = raw.metadata as Record<string, unknown>;
   }
+  // Read as unknown: `ai` types these options as JSON, which a signal is not.
+  const signal = requireAbortSignal((raw as Record<string, unknown>).signal, "withGovern: `providerOptions.anybioGovern.signal`");
+  if (signal !== undefined) out.signal = signal;
   return out;
 }
 
@@ -405,15 +642,6 @@ function textOf(content: readonly ContentPart[]): string {
   let text = "";
   for (const part of content) if (part.type === "text") text += part.text;
   return text;
-}
-
-/**
- * Whether the reply hands the caller text to deliver: an allow, or a hold
- * with `showHoldText`. The channel rule lives in `guard` (through
- * `isInSessionChannel`); the adapter reads its answer and adds no rule of its own.
- */
-function delivers(reply: GuardResult): boolean {
-  return !reply.held || reply.showHoldText;
 }
 
 /** The content that replaces a held or substituted draft: its text, or nothing when nothing is owed. */

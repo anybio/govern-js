@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { TRANSIENT_HTTP_STATUSES, isClientMisconfiguration } from "../src/client";
-import { GovernApiError, GovernNetworkError, GovernTimeoutError } from "../src/errors";
+import { GovernApiError, GovernConflictError, GovernNetworkError, GovernTimeoutError } from "../src/errors";
 import { REASONS } from "../src/types";
 import type { GovernEvent } from "../src/types";
 import { DRAFT, HOLD, fetchMock, jsonResponse, makeClient } from "./helpers";
@@ -131,7 +131,6 @@ describe("the status boundary", () => {
     [403, true],
     [404, true],
     [405, true],
-    [409, true],
     [413, true],
     [415, true],
     [422, true],
@@ -161,6 +160,20 @@ describe("the status boundary", () => {
     for (const [status, permanent] of cases) {
       if (status < 500) expect(TRANSIENT_HTTP_STATUSES.has(status)).toBe(!permanent);
     }
+  });
+
+  it("409 is neither: the record moved under the call, which is not a misconfiguration and not an outage", () => {
+    const conflict = new GovernConflictError({ status: 409, kind: "CONFLICT_ERROR", serverMessage: null, retryable: false, retryAfterMs: null });
+    expect(isClientMisconfiguration(conflict)).toBe(false);
+    expect(TRANSIENT_HTTP_STATUSES.has(409)).toBe(false);
+  });
+
+  it("a 409 on evaluate holds in enforce with its own cause, turn_conflict, on the reply and the degraded event", async () => {
+    const { reply, events } = await guardAgainst(() =>
+      jsonResponse(409, { kind: "CONFLICT_ERROR", error_message: "retry_of names a decision a reviewer has already acted on" }),
+    );
+    expect(reply).toMatchObject({ decision: "hold", text: HOLD, degraded: true, decisionId: null, reasons: [REASONS.turnConflict] });
+    expect(events).toContainEqual(expect.objectContaining({ type: "degraded", cause: "turn_conflict", status: 409, mode: "enforce" }));
   });
 
   it("a transport failure is never the caller's fault", () => {

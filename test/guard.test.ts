@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_HOLD_MESSAGE } from "../src/client";
+import { sha256Hex } from "../src/crypto";
 import { GovernAbortError } from "../src/errors";
 import type { GovernEvent } from "../src/types";
 import { DECISION_ID, DRAFT, HOLD, decisionView, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
@@ -8,11 +9,8 @@ import { DECISION_ID, DRAFT, HOLD, decisionView, fetchMock, jsonResponse, makeCl
 const ctx = { conversationId: "conv-1", channel: "web_chat" as const, audience: "patient" as const };
 
 describe("guard", () => {
-  it("returns the draft on allow with the decision id and a working ack", async () => {
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView({ decision: "allow" })),
-      () => jsonResponse(201, decisionView({ decision: "allow" })),
-    ]);
+  it("returns the draft on allow with the decision id, and reports nothing itself", async () => {
+    const { fetch, calls } = fetchMock(() => jsonResponse(200, decisionView({ decision: "allow" })));
     const govern = makeClient(fetch);
     const reply = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
     expect(reply.text).toBe(DRAFT);
@@ -21,13 +19,12 @@ describe("guard", () => {
     expect(reply.degraded).toBe(false);
     expect(reply.decisionId).toBe(DECISION_ID);
     expect(reply.mode).toBe("enforce");
-    await reply.ack();
-    expect(calls).toHaveLength(2);
-    expect(calls[1]!.url.pathname).toBe(`/api/v1/govern/decisions/${DECISION_ID}/outcome`);
-    expect(calls[1]!.json).toMatchObject({ delivered: true, delivered_content_hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    expect(calls[1]!.text).not.toContain(DRAFT);
-    await reply.ack();
-    expect(calls).toHaveLength(2);
+    expect(reply).not.toHaveProperty("ack");
+    // No later call reports it in the caller's place.
+    await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
+    await govern.flushReports();
+    await tick();
+    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(0);
   });
 
   it("returns the hold message on hold and on block, never the draft", async () => {
@@ -78,8 +75,6 @@ describe("guard", () => {
     expect(reply.mode).toBe("enforce");
     expect(reply.reasons).toEqual(["gate_unavailable"]);
     expect(events).toContainEqual(expect.objectContaining({ type: "degraded", mode: "enforce", modeSource: "assumed" }));
-    await reply.ack();
-    expect(calls).toHaveLength(2);
   });
 
   it("fails closed when the last known mode for the channel is enforce", async () => {
@@ -111,7 +106,6 @@ describe("guard", () => {
     const events: GovernEvent[] = [];
     const { fetch } = fetchMock([
       () => jsonResponse(202, decisionView({ mode: "observe", status: "pending" })),
-      () => jsonResponse(201, decisionView({ mode: "observe" })),
       () => jsonResponse(503, { kind: "SERVICE_UNAVAILABLE_ERROR", error_message: "gate down" }),
     ]);
     const govern = makeClient(fetch, { maxRetries: 0, onEvent: (e) => events.push(e) });
@@ -141,40 +135,20 @@ describe("guard", () => {
     expect(reply.text).toBe(DRAFT);
   });
 
-  it("reports the previous turn as delivered with its hash when ack was not called", async () => {
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView({ decision_id: "11111111-1111-4111-8111-111111111111" })),
-      () => jsonResponse(201, decisionView({ decision_id: "11111111-1111-4111-8111-111111111111" })),
-      () => jsonResponse(200, decisionView({ decision_id: "22222222-2222-4222-8222-222222222222" })),
-    ]);
-    const govern = makeClient(fetch);
-    const first = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    expect(first.decisionId).toBe("11111111-1111-4111-8111-111111111111");
-    const second = await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
-    await tick();
-    const outcomeCalls = calls.filter((c) => c.url.pathname.endsWith("/outcome"));
-    expect(outcomeCalls).toHaveLength(1);
-    expect(outcomeCalls[0]!.url.pathname).toBe("/api/v1/govern/decisions/11111111-1111-4111-8111-111111111111/outcome");
-    expect(outcomeCalls[0]!.json).toMatchObject({ delivered: true, delivered_content_hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    expect(outcomeCalls[0]!.text).not.toContain(DRAFT);
-    // A late ack on the first reply is a no-op: it was already reported.
-    await first.ack();
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
-    expect(second.decisionId).toBe("22222222-2222-4222-8222-222222222222");
-  });
-
-  it("flushPendingAcks reports everything still held", async () => {
+  it("the caller records what it wrote: released, with the hash of the text guard handed over", async () => {
     const { fetch, calls } = fetchMock([
       () => jsonResponse(200, decisionView()),
       () => jsonResponse(201, decisionView()),
     ]);
     const govern = makeClient(fetch);
-    await govern.guard(() => DRAFT, ctx);
-    await govern.flushPendingAcks();
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
+    const reply = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
+    await govern.reportOutcome(reply.decisionId!, { kind: "released", at: "2026-09-16T10:00:00Z", content: reply.text });
+    expect(calls[1]!.url.pathname).toBe(`/api/v1/govern/decisions/${DECISION_ID}/outcome`);
+    expect(calls[1]!.json).toEqual({ kind: "released", at: "2026-09-16T10:00:00Z", content_hash: await sha256Hex(DRAFT) });
+    expect(calls[1]!.text).not.toContain(DRAFT);
   });
 
-  it("does not register an ack when the channel is off", async () => {
+  it("has no decision id to report when the channel is off", async () => {
     const { fetch, calls } = fetchMock(() =>
       jsonResponse(200, decisionView({ decision_id: null, status: "not_evaluated", mode: "off", reasons: ["not_evaluated"] })),
     );
@@ -182,7 +156,6 @@ describe("guard", () => {
     const reply = await govern.guard(() => DRAFT, ctx);
     expect(reply.text).toBe(DRAFT);
     expect(reply.decisionId).toBeNull();
-    await reply.ack();
     await govern.guard(() => DRAFT, ctx);
     expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(0);
   });

@@ -7,7 +7,9 @@ export {
   DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS,
   MAX_CONVERSATION_ID_CHARS,
+  MAX_SUPERSEDES,
   MAX_TURN_ID_CHARS,
+  MAX_TURN_REF_CHARS,
   RESERVED_TURN_ID_PREFIX,
   TRANSIENT_HTTP_STATUSES,
   isClientMisconfiguration,
@@ -22,6 +24,7 @@ export {
   GovernError,
   GovernNetworkError,
   GovernNotAvailableError,
+  GovernReportError,
   GovernTimeoutError,
   GovernWebhookError,
   isGovernError,
@@ -47,9 +50,8 @@ export type {
   WebhookOptions,
 } from "./webhook";
 
-export { AUDIENCES, CHANNELS, IN_SESSION_CHANNELS, REASONS, isAutomationPaused, isInSessionChannel } from "./types";
+export { AUDIENCES, CHANNELS, IN_SESSION_CHANNELS, OUTCOME_REASONS, REASONS, isAutomationPaused, isInSessionChannel } from "./types";
 export type {
-  AckOptions,
   Audience,
   Channel,
   Decision,
@@ -75,11 +77,15 @@ export type {
   InboundMessage,
   Mode,
   Outcome,
+  OutcomeEvent,
+  OutcomeKind,
+  OutcomeSource,
   PatientConsentInput,
   PatientOptOutInput,
   PolicyRef,
   RecordDisclosureInput,
   ReleaseResult,
+  ReportedOutcomeKind,
   ReportOutcomeInput,
   ReviewState,
   Schemas,
@@ -96,6 +102,7 @@ export type {
   WireEvaluateRequest,
   WireOptOutRequest,
   WireOutcome,
+  WireOutcomeEvent,
   WireOutcomeRequest,
   WirePatientState,
   WirePolicyRef,

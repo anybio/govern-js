@@ -3,10 +3,12 @@
  */
 
 import { randomId, sha256Hex } from "./crypto";
-import { GovernAbortError, GovernApiError, GovernConfigError } from "./errors";
+import { GovernAbortError, GovernApiError, GovernConfigError, GovernConflictError, GovernReportError } from "./errors";
 import { send, type TransportConfig } from "./http";
+import { requireAbortSignal } from "./signal";
+import { MAX_SHORT_TEXT_CHARS, codePoints, shortTextFault, trimAsApi } from "./text";
+import { timeValue } from "./time";
 import type {
-  AckOptions,
   Audience,
   Channel,
   Decision,
@@ -29,10 +31,12 @@ import type {
   InboundFlag,
   Mode,
   Outcome,
+  OutcomeEvent,
   PatientConsentInput,
   PatientOptOutInput,
   RecordDisclosureInput,
   ReleaseResult,
+  ReportedOutcomeKind,
   ReportOutcomeInput,
   StopClass,
   SubmitTranscriptsInput,
@@ -45,6 +49,8 @@ import type {
   WireDisclosureRequest,
   WireEvaluateRequest,
   WireOptOutRequest,
+  WireOutcome,
+  WireOutcomeEvent,
   WireOutcomeRequest,
   WirePatientState,
   WireTranscriptBatch,
@@ -52,7 +58,7 @@ import type {
   WireTranscriptTurnView,
   WireWebhookDelivery,
 } from "./types";
-import { REASONS, isInSessionChannel } from "./types";
+import { REASONS, isInSessionChannel, isOutboundChannel } from "./types";
 import { handleWebhook as verifyAndParseWebhook, type HeadersLike, type WebhookEvent, type WebhookOptions } from "./webhook";
 
 export const DEFAULT_BASE_URL = "https://api.anybio.io";
@@ -70,15 +76,19 @@ export const RESERVED_TURN_ID_PREFIX = "govern:";
 /**
  * Longest `conversationId` the API accepts, in code points. The conversation's
  * disclosure evidence reference is composed from it and the stored reference
- * column is bounded, so the limit is on the identifier rather than discovered
- * at the write.
+ * column is bounded, so the limit is on the identifier, checked before the
+ * write and not discovered at it.
  */
 export const MAX_CONVERSATION_ID_CHARS = 187;
 /** Longest `turnId` the API accepts, in code points. Same reason, shorter fixed part. */
 export const MAX_TURN_ID_CHARS = 206;
+/** Longest `turnRef` the API accepts, in code points. */
+export const MAX_TURN_REF_CHARS = 128;
+/** Most decision ids one turn's `supersedes` may name. */
+export const MAX_SUPERSEDES = 8;
 
 /**
- * The two 4xx that mean "later" rather than "no". Everything else in the 4xx
+ * The two 4xx that mean "later", not "no". Everything else in the 4xx
  * range is the same answer however many times it is asked.
  *
  * 429 is rate limiting, which the transport already retries with the server's
@@ -91,17 +101,23 @@ export const TRANSIENT_HTTP_STATUSES: ReadonlySet<number> = new Set([408, 429]);
 
 /**
  * True when the API refused the call and would refuse it again (a 4xx other
- * than 408 and 429). Such a failure does not heal; alert on it separately
- * from `gate_unavailable`.
+ * than 408, 409 and 429). Such a failure does not heal; alert on it
+ * separately from `gate_unavailable`.
  *
  * A revoked application key and an unreachable API both arrive at `guard` as
  * "no decision" and both hold in enforce; this tells them apart. Anything that
  * is not a recognised API answer (a timeout, a dropped connection, an error
  * class this version does not know) is reported as `gate_unavailable`.
+ *
+ * A 409 is not a misconfiguration: it is the record's state moving under the
+ * call (a `retryOf` naming a decision already superseded, retried or
+ * delivered, or one a reviewer acted on first; a `supersedes` naming an
+ * enforce decision still being decided, or one delivered, reviewed,
+ * superseded or retried), and `guard` reports it as `turn_conflict`.
  */
 export function isClientMisconfiguration(error: unknown): boolean {
   if (!(error instanceof GovernApiError)) return false;
-  if (error.status < 400 || error.status >= 500) return false;
+  if (error.status < 400 || error.status >= 500 || error.status === 409) return false;
   return !TRANSIENT_HTTP_STATUSES.has(error.status);
 }
 
@@ -168,14 +184,6 @@ export interface GovernOptions {
   dangerouslyAllowBrowser?: boolean;
 }
 
-interface PendingAck {
-  decisionId: string;
-  /** What the automatic report says went out: `text`, unless the turn was held and `showHoldText` was false. */
-  delivered: boolean;
-  contentHash: string | undefined;
-  at: string;
-}
-
 /** Construct a client; the same as `new Govern(options)`. */
 export function createGovern(options: GovernOptions): Govern {
   return new Govern(options);
@@ -194,10 +202,14 @@ export class Govern {
   private readonly onEvent: ((event: GovernEvent) => void) | undefined;
   private readonly modes = new Map<Channel, Mode>();
   private readonly disclosureRefs = new BoundedMap<string, string>(10_000);
-  private readonly pendingAcks = new BoundedMap<string, PendingAck>(10_000);
-  private readonly reportedDecisions = new BoundedMap<string, true>(10_000);
   /** Decision ids whose holding line this instance has already armed. */
   private readonly holdingLines = new BoundedMap<string, true>(10_000);
+  /**
+   * Outcome reports on the wire, each settling (never rejecting) when its
+   * write is done. A report joins before anything of it is awaited, its hash
+   * included, so `flushReports` waits for every report started before it.
+   */
+  private readonly reportsInFlight = new Set<Promise<void>>();
   private readonly releaseWaiters = new Map<string, Set<() => void>>();
 
   constructor(options: GovernOptions) {
@@ -219,6 +231,7 @@ export class Govern {
     this.application = options.application.trim();
     this.applicationId = UUID.test(this.application) ? this.application.toLowerCase() : null;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+    if (options.holdMessage !== undefined) requireHoldMessage(options.holdMessage, "Govern: `holdMessage`");
     this.holdMessage = options.holdMessage ?? DEFAULT_HOLD_MESSAGE;
     this.assumeMode = options.assumeMode ?? "enforce";
     // Wrapped once, here, so every emitter in the SDK and the transport gets
@@ -249,6 +262,12 @@ export class Govern {
     requireConversationId(input.conversationId);
     requireTurnId(input.turnId);
     requireText(input.content, "content");
+    // `null` is none, as `undefined` is, for all three.
+    const retryOf = input.retryOf ?? undefined;
+    if (retryOf !== undefined) requireRetryOf(retryOf);
+    const turnRef = input.turnRef ?? undefined;
+    if (turnRef !== undefined) requireTurnRef(turnRef);
+    const supersedes = supersedesOf(input.supersedes);
     const disclosure = input.disclosure ?? this.disclosureAttachment(input.conversationId);
     const body: WireEvaluateRequest = {
       conversation_id: input.conversationId,
@@ -278,6 +297,9 @@ export class Govern {
     if (model) body.model = model;
     const modelVersion = input.modelVersion?.trim();
     if (modelVersion) body.model_version = modelVersion;
+    if (retryOf !== undefined) body.retry_of = retryOf;
+    if (turnRef !== undefined) body.turn_ref = turnRef;
+    if (supersedes !== undefined) body.supersedes = [...supersedes];
     const response = await send<WireDecision>(this.transport, {
       method: "POST",
       path: GOVERN_PATHS.evaluate,
@@ -285,7 +307,9 @@ export class Govern {
       idempotencyKey: input.turnId,
       signal: input.signal,
     });
-    const decision = this.read(toDecision(response.body, response.status === 202));
+    // A replayed turn whose outcome is already on record is closed: its
+    // holding line, if one was owed, went out with that outcome.
+    const decision = this.read(toDecision(response.body, response.status === 202), { arm: outcomeStateOf(response.body) === null });
     this.onEvent?.({
       type: "decision",
       decisionId: decision.id,
@@ -314,32 +338,83 @@ export class Govern {
   }
 
   /**
-   * Report what went out. The text is hashed here with SHA-256 and only the
-   * hash is sent. One outcome per decision: the same report again is
-   * accepted; a different one is refused with 409.
+   * Record one outcome event for a decision: `released` when you wrote the
+   * reply to its channel, `delivered` when the channel confirmed it reached
+   * the person, `discarded` when it was dropped before it reached anyone,
+   * `failed` when an attempt to deliver it failed. The text of `released`
+   * and `delivered` is hashed here with SHA-256 and only the hash is sent.
+   *
+   * One event per kind per decision, `failed` excepted: the same event again
+   * is accepted and resolves with the decision as recorded; a different
+   * event of a kind already on record is refused with 409
+   * (`GovernConflictError`). The fields are checked before anything is sent
+   * (`GovernConfigError` naming the field). The report is tracked from the
+   * moment this is called, so `flushReports` waits for it.
    */
   async reportOutcome(decisionId: string, input: ReportOutcomeInput): Promise<Decision> {
     requireText(decisionId, "decisionId");
-    // Blank is treated as absent, so a blank hash is never recorded as the
-    // hash of a delivered message.
-    const given = input.contentHash?.trim().toLowerCase();
-    let hash: string | undefined = given === "" ? undefined : given;
-    if (hash === undefined && input.content !== undefined) hash = await sha256Hex(input.content);
-    if (input.delivered && hash === undefined) {
-      throw new GovernConfigError(
-        "reportOutcome: pass `content` (hashed locally) or `contentHash` when delivered is true.",
-      );
-    }
-    const decision = await this.postOutcome(decisionId, {
-      delivered: input.delivered,
-      deliveredAt: isoString(input.deliveredAt ?? new Date()),
-      contentHash: hash,
-      deliveryRef: input.deliveryRef,
-      signal: input.signal,
-    });
-    this.reportedDecisions.set(decisionId, true);
-    this.onEvent?.({ type: "outcome", decisionId, delivered: input.delivered, auto: false });
-    return decision;
+    checkOutcome(input);
+    return this.track(this.writeOutcome(decisionId, input));
+  }
+
+  /**
+   * Internal: the report the adapters make. Not part of the supported
+   * surface; call `reportOutcome`.
+   *
+   * Records one outcome event as `reportOutcome` does, and never rejects:
+   * when the event does not land, `onFailure` is called with a
+   * `GovernReportError` built from the body as it was sent (the `at`, the
+   * hash and the trimmed texts the request carried; nothing is hashed
+   * again), or, when the fields were refused before anything was sent, from
+   * the fields as given, trimmed as the API trims them. A `kind` outside the
+   * four a caller reports has no event to name: `onFailure` gets the
+   * `GovernConfigError` itself. The whole of it, the fields' check, the hash,
+   * the request and the call to `onFailure`, is one promise in
+   * `reportsInFlight` from the moment this is called, so `flushReports`
+   * resolves only after `onFailure` has run. A field refused before sending
+   * reaches `onFailure` at once, with nothing awaited.
+   *
+   * @internal
+   */
+  reportForAdapter(
+    decisionId: string,
+    input: ReportOutcomeInput,
+    onFailure: (error: GovernReportError | GovernConfigError) => void,
+  ): Promise<void> {
+    let body: WireOutcomeRequest | undefined;
+    const done = (async (): Promise<void> => {
+      try {
+        requireText(decisionId, "decisionId");
+        checkOutcome(input);
+        body = await outcomeBody(input);
+        await this.postOutcome(decisionId, body, input.signal);
+      } catch (cause) {
+        let error: GovernReportError | GovernConfigError;
+        const kind: unknown = input.kind;
+        if (typeof kind === "string" && REPORTED_KINDS.has(kind)) {
+          const given = (value: unknown): string | null => (typeof value === "string" ? trimAsApi(value) : null);
+          error = new GovernReportError({
+            decisionId: String(decisionId),
+            kind: kind as ReportedOutcomeKind,
+            at: body?.at ?? timeValue(input.at) ?? String(input.at),
+            contentHash: body ? (body.content_hash ?? null) : null,
+            deliveryRef: body ? (body.delivery_ref ?? null) : given(input.deliveryRef),
+            reason: body ? (body.reason ?? null) : given(input.reason),
+            cause,
+          });
+        } else {
+          // Refused before anything was built: there is no event to resend.
+          error = cause instanceof GovernConfigError ? cause : new GovernConfigError(String(cause));
+        }
+        try {
+          onFailure(error);
+        } catch {
+          // The adapters pass an isolated handler; nothing escapes a report.
+        }
+      }
+    })();
+    this.track(done);
+    return done;
   }
 
   /**
@@ -425,40 +500,61 @@ export class Govern {
    *
    * - allow: the draft (or, for a clinician audience, the gate's substitution when it returns one)
    * - hold or block: the hold message when `showHoldText`, else the empty string
-   * - API unreachable: a hold, as above, when the channel's last known mode is
-   *   enforce (or unknown), the draft flagged `degraded` when it is observe or off
+   * - API unreachable, or `ctx.gateSignal` fired: a hold, as above, when the
+   *   channel's last known mode is enforce (or unknown), the draft flagged
+   *   `degraded` when it is observe or off
+   *
+   * `ctx.signal` cancels the call instead: its abort is rethrown as
+   * `GovernAbortError`, and it wins when both signals fired.
    *
    * On a hold, `sendHoldingLine` says whether a holding line is owed to the
    * patient now: at most once per decision in this instance, and never where
    * the contract says another message is the wrong thing. `showHoldText`
    * applies the channel: true on every hold in an in-session channel
-   * (`web_chat`, `app_message`), where the patient is waiting for the reply,
-   * and exactly `sendHoldingLine` on an outbound or unknown channel.
+   * (`web_chat`, `app_message`, `voice`), where the patient is waiting for
+   * the reply, and `sendHoldingLine` on an outbound or unknown channel. The
+   * API's `show_hold_text` wins when the decision carries it (see
+   * `GuardResult.showHoldText`).
    *
-   * Never returns rewritten text for a patient audience.
+   * Never returns rewritten text for a patient audience. Reports no outcome:
+   * once you write `text`, record it with `reportOutcome` (see
+   * `GuardResult.record`).
    */
   async guard(fn: () => Draft | Promise<Draft>, ctx: GuardContext): Promise<GuardResult> {
     // Before `fn`, so a draft is never generated for a turn the API would
-    // refuse on its identifiers.
+    // refuse on its identifiers. `null` is none, as `undefined` is, for
+    // `retryOf`, `turnRef`, `supersedes` and both signals.
     requireConversationId(ctx.conversationId);
     if (ctx.turnId !== undefined) requireTurnId(ctx.turnId);
-    void this.flushPendingAck(ctx.conversationId);
+    const retryOf = ctx.retryOf ?? undefined;
+    if (retryOf !== undefined) requireRetryOf(retryOf);
+    const turnRef = ctx.turnRef ?? undefined;
+    if (turnRef !== undefined) requireTurnRef(turnRef);
+    const supersedes = supersedesOf(ctx.supersedes);
+    if (ctx.holdMessage !== undefined) requireHoldMessage(ctx.holdMessage, "guard: `ctx.holdMessage`");
+    const callSignal = requireAbortSignal(ctx.signal, "guard: `ctx.signal`");
+    const gateSignal = requireAbortSignal(ctx.gateSignal, "guard: `ctx.gateSignal`");
 
     const produced = await fn();
-    const draft = typeof produced === "string" ? produced : produced?.text;
-    if (typeof draft !== "string") {
+    const producedText = typeof produced === "string" ? produced : produced?.text;
+    if (typeof producedText !== "string") {
       throw new GovernConfigError("guard: the draft function must return a string or { text: string }.");
     }
+    const draft: string = producedText;
     const turnId = ctx.turnId ?? randomId();
     const holdMessage = ctx.holdMessage ?? this.holdMessage;
 
     let record: Decision | null = null;
     let mode: Mode;
     let degraded = false;
-    let degradeCause: "gate_unavailable" | "client_misconfigured" = "gate_unavailable";
+    let degradeCause: "gate_unavailable" | "client_misconfigured" | "turn_conflict" = "gate_unavailable";
     let routeToHuman = false;
     let handoff: HandoffRef | null = null;
     let inboundFlags: InboundFlag[] = [];
+    // The transport takes one signal: the request runs under whichever of the
+    // caller's cancel and the gate bound fires first, and the catch below
+    // reads which one did.
+    const requestSignal = eitherSignal(callSignal, gateSignal);
     try {
       const input: EvaluateInput = {
         conversationId: ctx.conversationId,
@@ -473,7 +569,10 @@ export class Govern {
       if (ctx.inbound !== undefined) input.inbound = ctx.inbound;
       if (ctx.model !== undefined) input.model = ctx.model;
       if (ctx.modelVersion !== undefined) input.modelVersion = ctx.modelVersion;
-      if (ctx.signal !== undefined) input.signal = ctx.signal;
+      if (retryOf !== undefined) input.retryOf = retryOf;
+      if (turnRef !== undefined) input.turnRef = turnRef;
+      if (supersedes !== undefined) input.supersedes = supersedes;
+      if (requestSignal.signal !== undefined) input.signal = requestSignal.signal;
       record = await this.evaluate(input);
       mode = record.mode;
       degraded = record.degraded;
@@ -481,13 +580,20 @@ export class Govern {
       handoff = record.handoff;
       inboundFlags = record.inboundFlags;
     } catch (error) {
-      if (error instanceof GovernAbortError || error instanceof GovernConfigError) throw error;
+      if (error instanceof GovernConfigError) throw error;
+      // The caller's cancel is rethrown, and wins when both fired. The gate
+      // bound alone is an unreachable gate, and falls through to that rule.
+      if (error instanceof GovernAbortError && !gateBoundFired(callSignal, gateSignal)) throw error;
       degraded = true;
-      // The hold is the same either way. What differs is who has work to do,
-      // and an operator cannot act on a signal that will not say which.
-      degradeCause = isClientMisconfiguration(error)
-        ? REASONS.clientMisconfigured
-        : REASONS.gateUnavailable;
+      // The hold is the same every way. What differs is who has work to do,
+      // and an operator cannot act on a signal that will not say which: a
+      // 409 is a race on the record's state, not a key to fix.
+      degradeCause =
+        error instanceof GovernConflictError
+          ? REASONS.turnConflict
+          : isClientMisconfiguration(error)
+            ? REASONS.clientMisconfigured
+            : REASONS.gateUnavailable;
       const learned = this.modes.get(ctx.channel);
       mode = learned ?? this.assumeMode;
       this.onEvent?.({
@@ -501,6 +607,8 @@ export class Govern {
         status: error instanceof GovernApiError ? error.status : null,
         error: describe(error),
       });
+    } finally {
+      requestSignal.dispose();
     }
 
     let decision: DecisionVerdict;
@@ -533,53 +641,22 @@ export class Govern {
     // knows nothing about an opt-out or a revoked consent, which is the
     // contract's `patient_state_unavailable` case, and there the answer is no.
     const sendHoldingLine = held && record !== null && record.sendHoldingLine;
-    // The channel rule is about contacting the patient (consent and patient
-    // state), so it applies to the patient audience only; a clinician hold
-    // always shows its notice. For a patient: in a session the patient opened
-    // and is waiting in, the hold text is the reply, and consent does not
-    // govern a reply there: it is shown on every hold, the fail-closed one
-    // included. On an outbound channel, and on any channel this version does
-    // not know, a message goes out only when a holding line is owed;
-    // otherwise the caller is handed nothing to send.
-    const showHoldText = held && (ctx.audience !== "patient" || isInSessionChannel(ctx.channel) || sendHoldingLine);
+    // The same derivation as `Decision.showHoldText`: the API's answer when
+    // the decision carries one, else the channel rule. An SDK-side fail-closed
+    // hold has no decision, so the channel rule decides it.
+    const showHoldText = holdTextShown({
+      held,
+      audience: ctx.audience,
+      channel: ctx.channel,
+      sendHoldingLine,
+      wire: record?.raw ?? null,
+    });
     if (held && !showHoldText) text = "";
     const stopClass = record?.stopClass ?? null;
-    const owed = !held || showHoldText;
-
-    const decisionId = record?.id ?? null;
-    if (decisionId) {
-      // The automatic report follows the instruction this result gives: a
-      // hold that showed nothing is reported as nothing sent, and a hold
-      // shown in session as delivered with that text, since the patient saw it.
-      const delivered = owed;
-      this.pendingAcks.set(ctx.conversationId, {
-        decisionId,
-        delivered,
-        contentHash: delivered ? await sha256Hex(text) : undefined,
-        at: new Date().toISOString(),
-      });
-    }
-
-    let acked = false;
-    const ack = async (options: AckOptions = {}): Promise<void> => {
-      if (acked) return;
-      acked = true;
-      if (!decisionId) return;
-      const pending = this.pendingAcks.get(ctx.conversationId);
-      if (pending?.decisionId === decisionId) this.pendingAcks.delete(ctx.conversationId);
-      if (this.reportedDecisions.has(decisionId)) return;
-      const delivered = options.delivered ?? owed;
-      const outcome: ReportOutcomeInput = { delivered };
-      if (options.content !== undefined) outcome.content = options.content;
-      else if (delivered) outcome.content = text;
-      if (options.deliveredAt !== undefined) outcome.deliveredAt = options.deliveredAt;
-      if (options.deliveryRef !== undefined) outcome.deliveryRef = options.deliveryRef;
-      await this.reportOutcome(decisionId, outcome);
-    };
 
     return {
       text,
-      decisionId,
+      decisionId: record?.id ?? null,
       decision,
       mode,
       degraded,
@@ -592,14 +669,20 @@ export class Govern {
       handoff,
       inboundFlags,
       record,
-      ack,
     };
   }
 
-  /** Report every outcome `guard` is still holding as delivered. Call on shutdown. */
-  async flushPendingAcks(): Promise<void> {
-    const conversations = [...this.pendingAcks.keys()];
-    await Promise.all(conversations.map((c) => this.flushPendingAck(c)));
+  /**
+   * Wait for every outcome report already on the wire: those `reportOutcome`
+   * was called for and those an adapter made. Resolves once each has
+   * settled, whether it was recorded or failed (a failure reaches the caller
+   * of `reportOutcome`, or an adapter's `onError`). Call it on shutdown: a
+   * report still in flight when the process exits is lost. A
+   * `deliveredText` hook that has not answered yet has no report on the wire,
+   * so it is not waited for.
+   */
+  async flushReports(): Promise<void> {
+    while (this.reportsInFlight.size > 0) await Promise.all([...this.reportsInFlight]);
   }
 
   // -------------------------------------------------------------------------
@@ -749,63 +832,37 @@ export class Govern {
   // Internals
   // -------------------------------------------------------------------------
 
-  private async postOutcome(
-    decisionId: string,
-    input: {
-      delivered: boolean;
-      deliveredAt: string;
-      contentHash: string | undefined;
-      deliveryRef: string | undefined;
-      signal: AbortSignal | undefined;
-    },
-  ): Promise<Decision> {
-    const body: WireOutcomeRequest = {
-      delivered: input.delivered,
-      delivered_at: input.deliveredAt,
-    };
-    if (input.contentHash !== undefined) body.delivered_content_hash = input.contentHash;
-    if (input.deliveryRef !== undefined) body.delivery_ref = input.deliveryRef;
+  /**
+   * Hash the text (when no hash is given) and post the event. The caller has
+   * checked the fields. An outcome is recorded after something happened to
+   * the reply, so the answer never arms a holding line; it does count as
+   * having seen the decision.
+   */
+  private async writeOutcome(decisionId: string, input: ReportOutcomeInput): Promise<Decision> {
+    return this.postOutcome(decisionId, await outcomeBody(input), input.signal);
+  }
+
+  /** Post a built outcome body. */
+  private async postOutcome(decisionId: string, body: WireOutcomeRequest, signal: AbortSignal | undefined): Promise<Decision> {
     const response = await send<WireDecision>(this.transport, {
       method: "POST",
       path: GOVERN_PATHS.outcome(decisionId),
       body,
-      signal: input.signal,
+      signal,
     });
-    // An outcome is reported after something went out, so it never arms a
-    // holding line; it does count as having seen the decision.
+    this.onEvent?.({ type: "outcome", decisionId, kind: body.kind as ReportedOutcomeKind });
     return this.read(toDecision(response.body, false), { arm: false });
   }
 
-  private async flushPendingAck(conversationId: string): Promise<void> {
-    const pending = this.pendingAcks.get(conversationId);
-    if (!pending) return;
-    this.pendingAcks.delete(conversationId);
-    if (this.reportedDecisions.has(pending.decisionId)) return;
-    try {
-      await this.postOutcome(pending.decisionId, {
-        delivered: pending.delivered,
-        deliveredAt: pending.at,
-        contentHash: pending.contentHash,
-        deliveryRef: undefined,
-        signal: undefined,
-      });
-      // Marked only after the write succeeds, so a transient failure leaves
-      // the outcome owed and the caller's own later `ack()` still reports it.
-      this.reportedDecisions.set(pending.decisionId, true);
-      this.onEvent?.({ type: "outcome", decisionId: pending.decisionId, delivered: pending.delivered, auto: true });
-    } catch (error) {
-      // Still owed, and the slot is where it waits: a later flush, a shutdown
-      // flush, or the caller's `ack()` reports it. A newer turn on the
-      // conversation has the better claim to that slot, so when one has taken
-      // it this outcome is dropped rather than queued behind it. One pending
-      // outcome per conversation is the bound this map exists to keep, and a
-      // queue would grow during exactly the outage that fills it. What that
-      // costs is a row in the audit trail, never a verdict and never a word of
-      // returned text, and `ack()` still reports it. Pinned by "drops an
-      // auto-ack that failed while a newer turn held the slot".
-      if (!this.pendingAcks.has(conversationId)) this.pendingAcks.set(conversationId, pending);
-      this.onEvent?.({ type: "error", operation: "auto_ack", error: describe(error) });
-    }
+  /** Keep `work` in `reportsInFlight` until it settles, and hand it back unchanged. */
+  private track<T>(work: Promise<T>): Promise<T> {
+    const settled: Promise<void> = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reportsInFlight.add(settled);
+    void settled.then(() => this.reportsInFlight.delete(settled));
+    return work;
   }
 
   private disclosureAttachment(conversationId: string): { established: boolean; ref: string } | undefined {
@@ -833,9 +890,13 @@ export class Govern {
     this.modes.set(decision.channel, decision.mode);
     const id = decision.id;
     if (!decision.sendHoldingLine || !id) return decision;
-    const eligible = options.arm && holdingLineApplies(decision) && !this.holdingLines.has(id);
-    this.holdingLines.set(id, true);
-    return eligible ? decision : { ...decision, sendHoldingLine: false };
+    const eligible = options.arm && holdingLineApplies(decision) && !this.holdingLines.has(decisionKey(id));
+    this.holdingLines.set(decisionKey(id), true);
+    if (eligible) return decision;
+    // On an outbound channel the hold text is the holding line, so it is
+    // withheld with it.
+    const narrowed = { ...decision, sendHoldingLine: false };
+    return { ...narrowed, showHoldText: decisionShowsHoldText(narrowed) };
   }
 
   private sleepOrWake(decisionId: string, ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -882,7 +943,7 @@ export function toDecision(wire: WireDecision, accepted: boolean): Decision {
   const known = KNOWN_VERDICTS.has(rawVerdict);
   const failOpen = wire.mode === "observe" || wire.mode === "off";
   const decision: DecisionVerdict = known ? (rawVerdict as DecisionVerdict) : failOpen ? "allow" : "hold";
-  return {
+  const mapped: Decision = {
     id: wire.decision_id ?? null,
     status: wire.status,
     decision,
@@ -906,12 +967,17 @@ export function toDecision(wire: WireDecision, accepted: boolean): Decision {
     // The API's value. `Govern` narrows it to at most once per decision id on
     // the way out (see `Govern.read`); `raw.send_holding_line` keeps the original.
     sendHoldingLine: wire.send_holding_line === true,
+    // Set below, from the rest of the mapped decision.
+    showHoldText: false,
+    // Absent from a server that predates the fields: not retryable, not a retry.
+    retryable: wire.retryable === true,
+    retryOf: typeof wire.retry_of === "string" ? wire.retry_of : null,
     model: typeof wire.model === "string" ? wire.model : null,
     modelVersion: typeof wire.model_version === "string" ? wire.model_version : null,
     createdAt: wire.created_at ?? null,
     decidedAt: wire.decided_at ?? null,
     reviewedAt: wire.reviewed_at ?? null,
-    outcome: wire.outcome ? toOutcome(wire.outcome) : null,
+    outcome: toOutcome(wire.outcome),
     // Read from the typed wire. Absent means false.
     routeToHuman: wire.route_to_human === true,
     wouldHaveRouted: wire.would_have_routed === true,
@@ -923,6 +989,8 @@ export function toDecision(wire: WireDecision, accepted: boolean): Decision {
     degraded: !known,
     raw: wire,
   };
+  mapped.showHoldText = decisionShowsHoldText(mapped);
+  return mapped;
 }
 
 /**
@@ -950,6 +1018,59 @@ function holdingLineApplies(decision: Decision): boolean {
   if (decision.audience !== "patient") return false;
   if (decision.reviewState === "released" || decision.reviewState === "rejected") return false;
   return !decision.reasons.some((reason) => NO_HOLDING_LINE.has(reason));
+}
+
+/**
+ * `showHoldText`, the one derivation of it: `toDecision` and `Govern.read`
+ * call it for `Decision`, and `guard` for `GuardResult`.
+ *
+ * Nothing is shown where nothing was held. Otherwise the API's
+ * `show_hold_text` decides when the decision carries one: the API knows an
+ * accepted retry and a channel this version may not. A server that predates
+ * the field, and a fail-closed hold with no decision at all, get the channel
+ * rule: nothing once a reviewer has released or rejected the hold (the
+ * released text is the reply, or a person decided the turn); otherwise a
+ * clinician is shown the hold notice on every stop, a patient in session on
+ * every stop, and a patient on an outbound or unknown channel only when a
+ * holding line is owed.
+ *
+ * Two limits hold whichever answered, because on an outbound channel the
+ * hold text IS the holding line, and the at-most-once memory and the second
+ * check of the API's conditions for it live in `Govern.read`:
+ * - on `sms` and `email`, a patient's hold text is shown only where
+ *   `sendHoldingLine` (as narrowed) is true;
+ * - on a channel this version does not know, it is not shown where the SDK
+ *   withheld a holding line the API offered.
+ */
+function holdTextShown(input: {
+  held: boolean;
+  audience: unknown;
+  channel: unknown;
+  /** As `Govern.read` narrowed it. */
+  sendHoldingLine: boolean;
+  /** The decision as the API sent it; null when there is none. */
+  wire: { show_hold_text?: unknown; send_holding_line?: unknown; review_state?: unknown } | null;
+}): boolean {
+  const { held, audience, channel, sendHoldingLine, wire } = input;
+  if (!held) return false;
+  const inSession = isInSessionChannel(channel);
+  let shown: boolean;
+  if (typeof wire?.show_hold_text === "boolean") shown = wire.show_hold_text;
+  else if (wire?.review_state === "released" || wire?.review_state === "rejected") shown = false;
+  else shown = audience !== "patient" || inSession || sendHoldingLine;
+  if (!shown || audience !== "patient" || inSession) return shown;
+  if (isOutboundChannel(channel)) return sendHoldingLine;
+  return sendHoldingLine || wire?.send_holding_line !== true;
+}
+
+function decisionShowsHoldText(decision: Decision): boolean {
+  return holdTextShown({
+    held: decision.decision !== "allow",
+    audience: decision.audience,
+    channel: decision.channel,
+    sendHoldingLine: decision.sendHoldingLine,
+    wire: decision.raw,
+  });
 }
 
 function toInboundFlags(value: unknown): InboundFlag[] {
@@ -983,7 +1104,7 @@ function toHandoffRef(value: unknown): HandoffRef | null {
     resolvedAt: str(h.resolved_at),
     automationResumedAt: str(h.automation_resumed_at),
     // Absent only from a server that predates the field, where every open
-    // hand-off paused automation; read it that way rather than as "not paused".
+    // hand-off paused automation; read it that way, never as "not paused".
     pausesAutomation: h.pauses_automation !== false,
   };
 }
@@ -1093,16 +1214,39 @@ export class GovernHandoffs {
   }
 }
 
-function toOutcome(wire: NonNullable<WireDecision["outcome"]>): Outcome {
+/**
+ * The outcome trail, or null when there is none. An outcome without a
+ * `state` is not one this version can read (a server that predates the
+ * event trail): it maps to null, and `raw.outcome` keeps it.
+ */
+function toOutcome(wire: WireDecision["outcome"]): Outcome | null {
+  if (!wire || typeof wire !== "object" || typeof wire.state !== "string") return null;
   return {
-    delivered: wire.delivered,
-    deliveredAt: wire.delivered_at,
-    deliveredContentHash: wire.delivered_content_hash ?? null,
-    deliveryRef: wire.delivery_ref ?? null,
+    state: wire.state,
+    events: Array.isArray(wire.events) ? wire.events.map(toOutcomeEvent) : [],
+    raw: wire as WireOutcome,
+  };
+}
+
+function toOutcomeEvent(wire: WireOutcomeEvent): OutcomeEvent {
+  return {
+    kind: wire.kind,
+    source: wire.source,
+    at: wire.at,
     recordedAt: wire.recorded_at,
+    contentHash: wire.content_hash ?? null,
+    deliveryRef: wire.delivery_ref ?? null,
+    reason: wire.reason ?? null,
     hashMatchesRelease: wire.hash_matches_release ?? null,
+    supersededBy: wire.superseded_by ?? null,
     raw: wire,
   };
+}
+
+/** The state of a decision's outcome trail on the wire, or null when it has none. */
+function outcomeStateOf(wire: WireDecision): string | null {
+  const state: unknown = wire.outcome?.state;
+  return typeof state === "string" ? state : null;
 }
 
 function toTranscriptJob(wire: WireTranscriptJob, created: boolean): TranscriptJob {
@@ -1143,20 +1287,15 @@ function requireText(value: unknown, name: string): asserts value is string {
   }
 }
 
-/** Code points, as the API counts them; `"a".length` and `[..."a"].length` differ on astral characters. */
-function codePoints(value: string): number {
-  return [...value].length;
-}
-
 /**
  * A `conversationId` the API will accept: non-empty and inside
  * `MAX_CONVERSATION_ID_CHARS`.
  *
- * Checked here rather than left to the 400. `guard` degrades on a refused
- * call, so in enforce an identifier the API will not accept holds every turn
- * of the conversation; `isClientMisconfiguration` at least says that is the
+ * Checked here, not left to the 400. `guard` degrades on a refused call, so
+ * in enforce an identifier the API will not accept holds every turn of the
+ * conversation; `isClientMisconfiguration` at least says that is the
  * caller's to fix, but it cannot say which field. A `GovernConfigError` names
- * the field, is re-thrown by `guard` rather than degraded, and arrives before
+ * the field, is re-thrown by `guard` and never degraded, and arrives before
  * the draft is generated.
  */
 function requireConversationId(value: unknown, name = "conversationId"): asserts value is string {
@@ -1166,6 +1305,56 @@ function requireConversationId(value: unknown, name = "conversationId"): asserts
       `${name} must be at most ${MAX_CONVERSATION_ID_CHARS} characters. The API composes the conversation's disclosure reference from it, and that reference is bounded.`,
     );
   }
+}
+
+/**
+ * A `retryOf` the API can read: the `id` of a decision, which is a UUID. Any
+ * other value is a 400 from the API, so it is refused here, before a draft is
+ * generated for a turn the API would refuse. Exported for the adapters, which
+ * check a per-call `retryOf` before the model runs. Callers pass `null` as
+ * absent before they get here.
+ */
+export function requireRetryOf(value: unknown, name = "retryOf"): asserts value is string {
+  if (typeof value !== "string" || !UUID.test(value)) {
+    throw new GovernConfigError(`${name} must be the id of the decision this turn retries (a UUID).`);
+  }
+}
+
+/**
+ * A `turnRef` the API will accept: non-empty and inside
+ * `MAX_TURN_REF_CHARS`. Refused here, before a draft is generated, for the
+ * same reason as `requireConversationId`. Exported for the adapters, which
+ * check a per-call value before the model runs. Callers pass `null` as
+ * absent before they get here.
+ */
+export function requireTurnRef(value: unknown, name = "turnRef"): asserts value is string {
+  requireText(value, name);
+  if (codePoints(value) > MAX_TURN_REF_CHARS) {
+    throw new GovernConfigError(`${name} must be at most ${MAX_TURN_REF_CHARS} characters.`);
+  }
+}
+
+/**
+ * A `supersedes` list the API can read, as it will be sent: undefined for
+ * none (`undefined`, `null` or an empty list), else a copy of at most
+ * `MAX_SUPERSEDES` decision ids, each a UUID. Anything else is refused here,
+ * before a draft is generated. Exported for the adapters, which check a
+ * per-call value before the model runs.
+ */
+export function supersedesOf(value: unknown, name = "supersedes"): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    throw new GovernConfigError(`${name} must be a list of the decision ids this turn replaces.`);
+  }
+  if (value.length > MAX_SUPERSEDES) {
+    throw new GovernConfigError(`${name} may name at most ${MAX_SUPERSEDES} decisions.`);
+  }
+  for (const id of value) {
+    if (typeof id !== "string" || !UUID.test(id)) {
+      throw new GovernConfigError(`${name} must hold only decision ids (UUIDs).`);
+    }
+  }
+  return value.length === 0 ? undefined : [...(value as string[])];
 }
 
 /**
@@ -1201,6 +1390,148 @@ function idempotencyKey(given: string | undefined): string {
   return given?.trim() || randomId();
 }
 
+/**
+ * One signal that fires when either does, for a transport that takes one.
+ * `AbortSignal.any` is not on every runtime this package supports, so the
+ * listeners are added here and removed by `dispose` once the call is over.
+ */
+function eitherSignal(
+  first: AbortSignal | undefined,
+  second: AbortSignal | undefined,
+): { signal: AbortSignal | undefined; dispose: () => void } {
+  const none = (): void => {};
+  if (first === undefined || second === undefined) return { signal: first ?? second, dispose: none };
+  if (first.aborted) return { signal: first, dispose: none };
+  if (second.aborted) return { signal: second, dispose: none };
+  const controller = new AbortController();
+  const onFirst = (): void => controller.abort(first.reason);
+  const onSecond = (): void => controller.abort(second.reason);
+  first.addEventListener("abort", onFirst, { once: true });
+  second.addEventListener("abort", onSecond, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      first.removeEventListener("abort", onFirst);
+      second.removeEventListener("abort", onSecond);
+    },
+  };
+}
+
+/**
+ * A hold message is the text a held patient sees in place of the reply, and
+ * an empty one would be shown as nothing while every report said it was
+ * delivered. Refused when empty or blank.
+ */
+function requireHoldMessage(value: unknown, where: string): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new GovernConfigError(`${where} must be a non-empty string: it is the text a held patient sees in place of the reply.`);
+  }
+}
+
+/** Decision ids are UUIDs, compared without case: the key of every per-decision map. */
+function decisionKey(decisionId: string): string {
+  return decisionId.toLowerCase();
+}
+
+/** The outcome kinds a caller records. `superseded` is the API's own. */
+const REPORTED_KINDS: ReadonlySet<string> = new Set(["released", "delivered", "discarded", "failed"]);
+/** The kinds that carry the hash of the text. */
+const HASHED_KINDS: ReadonlySet<string> = new Set(["released", "delivered"]);
+
+/**
+ * The outcome body for checked fields, as it will be sent. Blank or `null`
+ * is absent, so a blank hash is never recorded as the hash of a message,
+ * and empty content is nothing went out. Only the kinds that carry a hash
+ * get one, computed here and nowhere else. The hash and the short texts are
+ * trimmed once, here, as the API trims them.
+ */
+async function outcomeBody(input: ReportOutcomeInput): Promise<WireOutcomeRequest> {
+  let hash: string | undefined;
+  if (HASHED_KINDS.has(input.kind)) {
+    const given = trimAsApi(input.contentHash ?? "").toLowerCase();
+    hash = given === "" ? undefined : given;
+    if (hash === undefined && typeof input.content === "string" && input.content !== "") hash = await sha256Hex(input.content);
+  }
+  const body: WireOutcomeRequest = { kind: input.kind, at: timeValue(input.at) as string };
+  if (hash !== undefined) body.content_hash = hash;
+  if (typeof input.deliveryRef === "string") body.delivery_ref = trimAsApi(input.deliveryRef);
+  if (typeof input.reason === "string") body.reason = trimAsApi(input.reason);
+  return body;
+}
+
+/** SHA-256 hex, either case, as the API takes it. */
+const SHA256_HEX = /^[0-9a-f]{64}$/i;
+
+/**
+ * A `deliveryRef` or `reason` the API will take: absent (`undefined` or
+ * `null`), or a string that, trimmed as the API trims it, is not blank, is
+ * at most 256 characters and carries no control character. Sent trimmed.
+ */
+function checkShortText(value: unknown, name: string): void {
+  if (value === undefined || value === null) return;
+  const fault = shortTextFault(value);
+  if (fault === "is not a string") throw new GovernConfigError(`reportOutcome: \`${name}\` must be a string.`);
+  if (fault !== undefined) {
+    throw new GovernConfigError(`reportOutcome: \`${name}\` must not be blank, must be at most ${MAX_SHORT_TEXT_CHARS} characters, and must carry no control characters; it ${fault}.`);
+  }
+}
+
+/**
+ * An outcome report's fields, checked before anything is posted, so a slip
+ * is a `GovernConfigError` naming the field and not a body the API refuses
+ * (or a `RangeError` from deep in the report). The API's own rules are
+ * mirrored: `released` and `delivered` carry the hash of the text,
+ * `discarded` and `failed` carry none; a hash is 64 hex characters; a
+ * reference or a reason is bounded. Empty `content` is no text, the SDK's
+ * one "nothing went out" value. JavaScript callers are the reason for the
+ * type checks: `content: 123` would record the hash of "123".
+ */
+function checkOutcome(input: {
+  kind?: unknown;
+  at?: unknown;
+  content?: unknown;
+  contentHash?: unknown;
+  deliveryRef?: unknown;
+  reason?: unknown;
+}): void {
+  const kind = input.kind;
+  if (kind === "superseded") {
+    throw new GovernConfigError("reportOutcome: `superseded` is recorded by the API itself, when it accepts a turn that replaces the decision; report released, delivered, discarded or failed.");
+  }
+  if (typeof kind !== "string" || !REPORTED_KINDS.has(kind)) {
+    throw new GovernConfigError("reportOutcome: `kind` must be released, delivered, discarded or failed.");
+  }
+  if (timeValue(input.at) === undefined) {
+    throw new GovernConfigError("reportOutcome: `at` is required and must be a valid Date or an RFC 3339 date-time string, such as 2026-09-16T10:00:00Z.");
+  }
+  // `null` is absent for every optional field, as it is across the SDK.
+  if (input.content !== undefined && input.content !== null && typeof input.content !== "string") {
+    throw new GovernConfigError("reportOutcome: `content` must be a string.");
+  }
+  if (input.contentHash !== undefined && input.contentHash !== null && typeof input.contentHash !== "string") {
+    throw new GovernConfigError("reportOutcome: `contentHash` must be a string (the SHA-256 hex of the text).");
+  }
+  // Blank is absent, for the hash and for the text.
+  const givenHash = typeof input.contentHash === "string" ? trimAsApi(input.contentHash) : "";
+  if (givenHash !== "" && !SHA256_HEX.test(givenHash)) {
+    throw new GovernConfigError("reportOutcome: `contentHash` must be the SHA-256 of the UTF-8 text, as 64 hex characters.");
+  }
+  const hasText = (typeof input.content === "string" && input.content !== "") || givenHash !== "";
+  if (HASHED_KINDS.has(kind) && !hasText) {
+    throw new GovernConfigError(`reportOutcome: \`${kind}\` carries the hash of the text: pass \`content\` (hashed locally) or \`contentHash\`.`);
+  }
+  if (!HASHED_KINDS.has(kind) && hasText) {
+    throw new GovernConfigError(`reportOutcome: \`${kind}\` carries no text; pass neither \`content\` nor \`contentHash\`.`);
+  }
+  checkShortText(input.deliveryRef, "deliveryRef");
+  checkShortText(input.reason, "reason");
+}
+
+/** The gate bound fired and the caller's own cancel did not. */
+function gateBoundFired(callSignal: AbortSignal | undefined, gateSignal: AbortSignal | undefined): boolean {
+  return gateSignal?.aborted === true && callSignal?.aborted !== true;
+}
+
 function isoString(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
@@ -1223,7 +1554,7 @@ function describe(error: unknown): string {
  * A throw is swallowed and reported back on the one channel that cannot change
  * a verdict: an `error` event with `operation: "on_event"`, carrying the
  * callback's own error text and nothing of the message. A callback that throws
- * on that report too gets silence rather than recursion; no telemetry is worth
+ * on that report too gets silence, not recursion; no telemetry is worth
  * turning a hold into a thrown error at the caller.
  */
 export function isolateEvents(

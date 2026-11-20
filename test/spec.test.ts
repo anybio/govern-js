@@ -105,6 +105,53 @@ describe("the holding line, stop class and model fields", () => {
   });
 });
 
+describe("the hold text and the retry fields", () => {
+  const doc = JSON.parse(readFileSync(resolve(root, "spec/openapi.json"), "utf8")) as {
+    components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[] }> };
+  };
+
+  // `toDecision` reads these off the typed wire, and an absent
+  // `show_hold_text` falls back to the channel rule: the document must keep
+  // them required, so absent can only mean an older server.
+  it("show_hold_text and retryable are required on the decision view, and retry_of is declared", () => {
+    const view = doc.components.schemas.DecisionView!;
+    for (const field of ["show_hold_text", "retryable"]) expect(view.required ?? [], field).toContain(field);
+    expect(Object.keys(view.properties ?? {})).toContain("retry_of");
+  });
+
+  it("retry_of is declared on the evaluate request", () => {
+    expect(Object.keys(doc.components.schemas.EvaluateRequest!.properties ?? {})).toContain("retry_of");
+  });
+});
+
+describe("the turn reference and the superseded attempts", () => {
+  const doc = JSON.parse(readFileSync(resolve(root, "spec/openapi.json"), "utf8")) as {
+    components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[] }> };
+  };
+
+  // `evaluate` sends `turn_ref` and `supersedes`, and the API ignores a field
+  // its schema does not name: the document must keep declaring both, or a
+  // rename would leave every turn grouping and superseding nothing.
+  it("turn_ref and supersedes are declared on the evaluate request", () => {
+    const request = doc.components.schemas.EvaluateRequest!;
+    for (const field of ["turn_ref", "supersedes"]) {
+      expect(Object.keys(request.properties ?? {}), field).toContain(field);
+    }
+  });
+
+  // `WireDecision` marks `supersedes` optional because the document requires
+  // it and an older server omits it; `turn_ref` and `superseded_by` are
+  // optional in the document itself. Hold the document to both halves.
+  it("turn_ref, supersedes and superseded_by are declared on the decision view, and only supersedes is required", () => {
+    const view = doc.components.schemas.DecisionView!;
+    for (const field of ["turn_ref", "supersedes", "superseded_by"]) {
+      expect(Object.keys(view.properties ?? {}), field).toContain(field);
+    }
+    expect(view.required ?? []).toContain("supersedes");
+    for (const field of ["turn_ref", "superseded_by"]) expect(view.required ?? [], field).not.toContain(field);
+  });
+});
+
 describe("the hand-off pause and the reply still owed", () => {
   const doc = JSON.parse(readFileSync(resolve(root, "spec/openapi.json"), "utf8")) as {
     components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[] }> };
@@ -126,7 +173,7 @@ describe("the hand-off pause and the reply still owed", () => {
 });
 
 describe("the reason codes the SDK publishes", () => {
-  it("are the API's snake_case codes, plus the two the SDK adds itself", () => {
+  it("are the API's snake_case codes, plus the three the SDK adds itself", () => {
     // The API's reason codes. Update both together.
     const api = [
       "policy_missing",
@@ -147,9 +194,10 @@ describe("the reason codes the SDK publishes", () => {
       "frequency_cap",
       "patient_state_unavailable",
     ];
-    // The SDK's own two: one for a decision value it cannot read, one for a
-    // call the API refused. Neither is ever sent by the API.
-    const sdkOnly = ["unknown_decision", "client_misconfigured"];
+    // The SDK's own three: one for a decision value it cannot read, one for
+    // a call the API refused, one for a turn the API refused with 409.
+    // None is ever sent by the API.
+    const sdkOnly = ["unknown_decision", "client_misconfigured", "turn_conflict"];
     expect([...Object.values(REASONS)].sort()).toEqual([...api, ...sdkOnly].sort());
   });
 });

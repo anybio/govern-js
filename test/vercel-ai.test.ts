@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { sha256Hex } from "../src/crypto";
 import { GovernConfigError } from "../src/errors";
 import {
   PROVIDER_METADATA_KEY,
@@ -64,7 +65,7 @@ describe("anybioGovern middleware: wrapGenerate", () => {
   } as unknown as GenerateResult;
 
   it("returns the generated text unchanged on allow and records the decision in providerMetadata", async () => {
-    const { fetch, calls } = fetchMock([
+    const { fetch, calls, waitForCall } = fetchMock([
       () => jsonResponse(200, decisionView({ decision: "allow" })),
       () => jsonResponse(201, decisionView({ decision: "allow" })),
     ]);
@@ -79,7 +80,7 @@ describe("anybioGovern middleware: wrapGenerate", () => {
     expect(textOf(result.content)).toBe(DRAFT);
     expect(result.providerMetadata?.[PROVIDER_METADATA_KEY]).toMatchObject({ decision: "allow", held: false, degraded: false });
     expect(calls[0]!.json).toMatchObject({ conversation_id: "conv-1", turn_id: "turn-1", content: DRAFT });
-    await tick();
+    await waitForCall("outcome");
     expect(calls[1]!.url.pathname).toContain("/outcome");
     expect(calls[1]!.text).not.toContain(DRAFT);
   });
@@ -140,7 +141,7 @@ describe("anybioGovern middleware: wrapStream", () => {
 
   it("emits no chunk to a patient audience before the decision, then the hold message instead of the draft", async () => {
     const evaluate = deferred<Response>();
-    const { fetch, calls } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView({ decision: "hold" }))]);
+    const { fetch, calls, waitForCall } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView({ decision: "hold" }))]);
     const govern = makeClient(fetch);
     const middleware = withGovern({ govern, channel: "web_chat", audience: "patient" });
     const stream = await wrap(middleware, sourceParts(["Good news: this program cures ", "high blood pressure."]));
@@ -151,7 +152,9 @@ describe("anybioGovern middleware: wrapStream", () => {
       firstChunk = chunk;
       return chunk;
     });
-    await tick(5);
+    await waitForCall("evaluate");
+    // Microtasks settle: nothing may have been released before the decision.
+    await tick();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url.pathname).toBe("/api/v1/govern/evaluate");
     expect(calls[0]!.json).toMatchObject({ content: "Good news: this program cures high blood pressure." });
@@ -172,7 +175,7 @@ describe("anybioGovern middleware: wrapStream", () => {
     expect(JSON.stringify(rest)).not.toContain("cures");
     const finish = rest.find((p) => p.type === "finish") as Extract<StreamPart, { type: "finish" }>;
     expect(finish.providerMetadata?.[PROVIDER_METADATA_KEY]).toMatchObject({ decision: "hold", held: true });
-    await tick();
+    await waitForCall("outcome");
     expect(calls[1]!.url.pathname).toContain("/outcome");
   });
 
@@ -214,7 +217,7 @@ describe("anybioGovern middleware: wrapStream", () => {
 
   it("streams a clinician audience through at once and evaluates after the end", async () => {
     const evaluate = deferred<Response>();
-    const { fetch, calls } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView({ audience: "clinician" }))]);
+    const { fetch, calls, waitForCall } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView({ audience: "clinician" }))]);
     const govern = makeClient(fetch);
     const middleware = withGovern({ govern, channel: "web_chat", audience: "clinician" });
     const stream = await wrap(middleware, sourceParts(["Part one. ", "Part two."]));
@@ -230,13 +233,14 @@ describe("anybioGovern middleware: wrapStream", () => {
     }
     const deltas = rest.filter((p): p is Extract<StreamPart, { type: "text-delta" }> => p.type === "text-delta");
     expect(deltas.map((d) => d.delta)).toEqual(["Part one. ", "Part two."]);
+    await waitForCall("evaluate");
     await tick();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.json).toMatchObject({ audience: "clinician", content: "Part one. Part two." });
     evaluate.resolve(jsonResponse(200, decisionView({ audience: "clinician", decision: "allow" })));
-    await tick(5);
+    await waitForCall("outcome");
     expect(calls[1]!.url.pathname).toContain("/outcome");
-    expect(calls[1]!.json).toMatchObject({ delivered: true });
+    expect(calls[1]!.json).toEqual({ kind: "released", at: expect.any(String), content_hash: await sha256Hex("Part one. Part two.") });
   });
 });
 
@@ -280,7 +284,7 @@ describe("anybioGovern middleware: the patient closes the tab", () => {
     await tick();
 
     // The runtime cancels the response stream. Nothing may reject here, and
-    // the provider must stop generating rather than bill a closed tab.
+    // the provider must stop generating, and not bill a closed tab.
     await expect(reader.cancel("patient left")).resolves.toBeUndefined();
     expect(source.cancelReasons).toEqual(["patient left"]);
     await expect(pendingRead).resolves.toMatchObject({ done: true });
@@ -289,12 +293,13 @@ describe("anybioGovern middleware: the patient closes the tab", () => {
 
   it("does not enqueue on the closed controller when the decision lands after the cancel", async () => {
     const evaluate = deferred<Response>();
-    const { fetch, calls } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView())]);
+    const { fetch, calls, waitForCall } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView())]);
     const middleware = withGovern({ govern: makeClient(fetch), channel: "web_chat", audience: "patient" });
     const stream = await wrapStream(middleware, streamOf(sourceParts(["Good news: this program cures ", "high blood pressure."])));
     const reader = stream.getReader();
     void reader.read();
-    await tick(5);
+    await waitForCall("evaluate");
+    await tick();
     expect(calls).toHaveLength(1);
 
     const unhandled: unknown[] = [];
@@ -312,20 +317,21 @@ describe("anybioGovern middleware: the patient closes the tab", () => {
     expect(unhandled).toEqual([]);
   });
 
-  it("records a cancelled turn as not delivered, so the next turn's auto-ack cannot claim it was", async () => {
+  it("records a cancelled turn as discarded, cancelled: nothing reached the patient", async () => {
     const evaluate = deferred<Response>();
-    const { fetch, calls } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView())]);
+    const { fetch, calls, waitForCall } = fetchMock([() => evaluate.promise, () => jsonResponse(201, decisionView())]);
     const middleware = withGovern({ govern: makeClient(fetch), channel: "web_chat", audience: "patient" });
     const stream = await wrapStream(middleware, streamOf(sourceParts(["Good news."])));
     const reader = stream.getReader();
     void reader.read();
-    await tick(5);
+    await waitForCall("evaluate");
     await reader.cancel("patient left");
     evaluate.resolve(jsonResponse(200, decisionView({ decision: "allow" })));
-    await tick(5);
+    await waitForCall("outcome");
+    await tick();
     const outcomes = calls.filter((c) => c.url.pathname.endsWith("/outcome"));
     expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]!.json).toMatchObject({ delivered: false });
+    expect(outcomes[0]!.json).toEqual({ kind: "discarded", reason: "cancelled", at: expect.any(String) });
   });
 
   it("a throwing onDecision cannot stall the stream or escape as an unhandled rejection", async () => {

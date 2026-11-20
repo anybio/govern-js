@@ -9,7 +9,7 @@ import * as vercelAi from "../src/vercel-ai";
  *
  * Every name in these lists is a promise: the tag freezes it, and taking one
  * back afterwards is a major version. The lists exist so that adding a name is
- * a decision somebody made, rather than an `export` keyword that travelled
+ * a decision somebody made, not an `export` keyword that travelled
  * with a helper. An internal helper stays internal and its tests import it
  * from its own module, not from the entry point.
  *
@@ -37,11 +37,15 @@ describe("the published export surface", () => {
       "GovernHandoffs",
       "GovernNetworkError",
       "GovernNotAvailableError",
+      "GovernReportError",
       "GovernTimeoutError",
       "GovernWebhookError",
       "IN_SESSION_CHANNELS",
       "MAX_CONVERSATION_ID_CHARS",
+      "MAX_SUPERSEDES",
       "MAX_TURN_ID_CHARS",
+      "MAX_TURN_REF_CHARS",
+      "OUTCOME_REASONS",
       "REASONS",
       "RESERVED_TURN_ID_PREFIX",
       "SDK_NAME",

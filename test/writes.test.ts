@@ -1,15 +1,19 @@
 /**
  * The writes that land on the customer's account.
  *
- * Two properties, both about what the record says afterwards: a retried write
- * must not become two rows, and an outcome the SDK failed to report must not
- * be marked as reported.
+ * Three properties, all about what the record says afterwards: a retried
+ * write must not become two rows, an outcome report that failed reaches
+ * the caller and is not made later in its place, and a decision the API
+ * already holds an outcome for is not reported again.
  */
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { GovernEvent, WirePatientState, WireTranscriptJob } from "../src/types";
-import { APPLICATION_ID, DECISION_ID, DRAFT, decisionView, deferred, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
+import { GovernReportError } from "../src/errors";
+import type { WireOutcome, WirePatientState, WireTranscriptJob } from "../src/types";
+import { GovernCallbackHandler } from "../src/langchain";
+import { withGovern } from "../src/vercel-ai";
+import { APPLICATION_ID, DECISION_ID, DRAFT, decisionView, fetchMock, jsonResponse, makeClient, outcomeTrail, tick } from "./helpers";
 
 const ctx = { conversationId: "conv-1", channel: "web_chat" as const, audience: "patient" as const };
 
@@ -109,102 +113,136 @@ describe("a retried write does not double-write", () => {
     await govern.recordPatientConsent({ patientRef: "patient-1", state: "granted" });
     for (const call of calls) expect(call.headers.get("idempotency-key")).not.toMatch(/^govern:/);
   });
-});
 
-describe("a failed auto-ack is not a reported outcome", () => {
-  it("keeps the pending outcome so a later flush still reports it", async () => {
-    const events: GovernEvent[] = [];
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView()),
-      serverError,
-      () => jsonResponse(201, decisionView()),
-    ]);
-    const govern = makeClient(fetch, { maxRetries: 0, onEvent: (e) => events.push(e) });
-    await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-
-    await govern.flushPendingAcks();
-    expect(events).toContainEqual(expect.objectContaining({ type: "error", operation: "auto_ack" }));
-
-    // The write never landed, so the outcome is still owed.
-    await govern.flushPendingAcks();
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(2);
-  });
-
-  it("does not suppress the caller's own ack when the auto-ack failed", async () => {
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView({ decision_id: DECISION_ID })),
-      serverError,
-      () => jsonResponse(200, decisionView({ decision_id: "22222222-2222-4222-8222-222222222222" })),
-      () => jsonResponse(201, decisionView({ decision_id: DECISION_ID })),
-    ]);
-    const govern = makeClient(fetch, { maxRetries: 0 });
-    const first = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    // The next turn flushes the first one's outcome, and the write fails.
-    await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
-
-    await first.ack();
-    const outcomes = calls.filter((c) => c.url.pathname.endsWith("/outcome"));
-    expect(outcomes).toHaveLength(2);
-    expect(outcomes[1]!.url.pathname).toContain(DECISION_ID);
-  });
-
-  // The known residual, pinned rather than papered over. A conversation holds
-  // one pending outcome, on purpose: the map is bounded, and the alternative
-  // is a per-conversation queue that grows during exactly the outage that
-  // fills it. So when an auto-ack fails and a newer turn has already taken
-  // the slot, the older outcome is dropped. It costs a row in the audit
-  // trail, never a verdict or a line of returned text, and `ack()` (which
-  // every adapter calls for you) still reports it. If that trade ever stops
-  // being the right one, this test is the one to change.
-  it("drops an auto-ack that failed while a newer turn held the slot, and leaves it to ack()", async () => {
-    const SECOND = "22222222-2222-4222-8222-222222222222";
-    const stalled = deferred<Response>();
-    const events: GovernEvent[] = [];
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView({ decision_id: DECISION_ID })),
-      () => stalled.promise,
-      () => jsonResponse(200, decisionView({ decision_id: SECOND })),
-      () => jsonResponse(201, decisionView({ decision_id: SECOND })),
-      () => jsonResponse(201, decisionView({ decision_id: DECISION_ID })),
-    ]);
-    const govern = makeClient(fetch, { maxRetries: 0, onEvent: (e) => events.push(e) });
-    const first = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    // The second turn starts the first one's outcome write, and finishes
-    // before that write comes back: the slot is the second turn's now.
-    await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
-    stalled.resolve(jsonResponse(500, { kind: "AXUM_ERROR", error_message: "boom" }));
-    await tick();
-    expect(events).toContainEqual(expect.objectContaining({ type: "error", operation: "auto_ack" }));
-
-    // A later flush reports the second turn and nothing else: the first
-    // turn's outcome was not re-queued behind it.
-    await govern.flushPendingAcks();
-    const outcomes = calls.filter((c) => c.url.pathname.endsWith("/outcome")).map((c) => c.url.pathname);
-    expect(outcomes.filter((p) => p.includes(SECOND))).toHaveLength(1);
-    expect(outcomes.filter((p) => p.includes(DECISION_ID))).toHaveLength(1);
-
-    // And the route that always works: the caller's own ack still reports it.
-    await first.ack();
-    expect(calls.filter((c) => c.url.pathname.includes(DECISION_ID) && c.url.pathname.endsWith("/outcome"))).toHaveLength(2);
-  });
-
-  it("still reports each outcome exactly once when the writes do land", async () => {
-    const { fetch, calls } = fetchMock([
-      () => jsonResponse(200, decisionView({ decision_id: DECISION_ID })),
-      () => jsonResponse(201, decisionView({ decision_id: DECISION_ID })),
-      () => jsonResponse(200, decisionView({ decision_id: "22222222-2222-4222-8222-222222222222" })),
-    ]);
+  it("an outcome report the transport retries is the same event: the same at, so the API answers it as a replay", async () => {
+    const { fetch, calls } = fetchMock([serverError, () => jsonResponse(200, decisionView({ outcome: outcomeTrail() }))]);
     const govern = makeClient(fetch);
-    const first = await govern.guard(() => DRAFT, { ...ctx, turnId: "turn-1" });
-    await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
-    // The first turn was already auto-acked, so the caller's late ack is a
-    // no-op; the second turn's outcome is reported by the flush.
-    await first.ack();
-    await govern.flushPendingAcks();
-    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome")).map((c) => c.url.pathname)).toEqual([
-      `/api/v1/govern/decisions/${DECISION_ID}/outcome`,
-      "/api/v1/govern/decisions/22222222-2222-4222-8222-222222222222/outcome",
-    ]);
+    // A given hash, so nothing runs off the fake clock before the first attempt.
+    await withRetry(() => govern.reportOutcome(DECISION_ID, { kind: "released", at: new Date("2026-09-16T00:00:01Z"), contentHash: "a".repeat(64) }));
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.json).toEqual(calls[0]!.json);
+    expect(calls[0]!.json).toMatchObject({ at: "2026-09-16T00:00:01.000Z" });
   });
 });
+
+describe("a failed outcome report is the caller's", () => {
+  it("reaches the adapter's onError, and nothing reports the decision later", async () => {
+    const errors: unknown[] = [];
+    const { fetch, calls } = fetchMock([() => jsonResponse(200, decisionView()), serverError, () => jsonResponse(200, decisionView({ decision_id: "22222222-2222-4222-8222-222222222222" }))]);
+    const govern = makeClient(fetch, { maxRetries: 0 });
+    const middleware = withGovern({ govern, channel: "web_chat", audience: "patient", onError: (error) => errors.push(error) });
+    await generate(middleware, "turn-1");
+    await govern.flushReports();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(GovernReportError);
+    expect(errors[0]).toMatchObject({ decisionId: DECISION_ID, kind: "released" });
+    await govern.guard(() => "second draft", { ...ctx, turnId: "turn-2" });
+    await govern.flushReports();
+    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(1);
+  });
+});
+
+describe("a decision with an outcome already on record", () => {
+  it("arms no holding line in a fresh process: the turn is already closed", async () => {
+    const stopped = { decision: "hold" as const, channel: "sms" as const, reasons: ["prohibited_claim", "held_for_review"], review_state: "pending" as const, send_holding_line: true };
+    const smsCtx = { conversationId: "conv-1", turnId: "turn-1", channel: "sms" as const, audience: "patient" as const };
+
+    // The same stopped turn, first decided fresh: the holding line is owed.
+    const fresh = fetchMock([() => jsonResponse(200, decisionView({ ...stopped }))]);
+    const first = await makeClient(fresh.fetch, { maxRetries: 0 }).guard(() => DRAFT, smsCtx);
+    expect(first.sendHoldingLine).toBe(true);
+
+    // Process B replays it with an outcome on record: nothing is owed again.
+    const replayed = fetchMock([() => jsonResponse(200, decisionView({ ...stopped, outcome: outcomeTrail([{ kind: "discarded" }]) }))]);
+    const reply = await makeClient(replayed.fetch, { maxRetries: 0 }).guard(() => DRAFT, smsCtx);
+    expect(reply.held).toBe(true);
+    expect(reply.record?.outcome?.state).toBe("discarded");
+    expect(reply.sendHoldingLine).toBe(false);
+    expect(reply.showHoldText).toBe(false);
+    expect(reply.text).toBe("");
+  });
+
+  it("reads the trail: its state and each event, camelCased, with the wire object on raw", async () => {
+    const trail = outcomeTrail([
+      { kind: "released", delivery_ref: "SM-1", hash_matches_release: true },
+      { kind: "superseded", source: "retry", superseded_by: "22222222-2222-4222-8222-222222222222", at: "2026-09-16T00:00:03Z", recorded_at: "2026-09-16T00:00:03Z" },
+    ]);
+    const { fetch } = fetchMock(() => jsonResponse(200, decisionView({ outcome: trail })));
+    const decision = await makeClient(fetch).getDecision(DECISION_ID);
+    expect(decision.outcome).toEqual({
+      state: "superseded",
+      events: [
+        {
+          kind: "released",
+          source: "caller",
+          at: "2026-09-16T00:00:01Z",
+          recordedAt: "2026-09-16T00:00:02Z",
+          contentHash: "a".repeat(64),
+          deliveryRef: "SM-1",
+          reason: null,
+          hashMatchesRelease: true,
+          supersededBy: null,
+          raw: trail.events[0],
+        },
+        {
+          kind: "superseded",
+          source: "retry",
+          at: "2026-09-16T00:00:03Z",
+          recordedAt: "2026-09-16T00:00:03Z",
+          contentHash: null,
+          deliveryRef: null,
+          reason: null,
+          hashMatchesRelease: null,
+          supersededBy: "22222222-2222-4222-8222-222222222222",
+          raw: trail.events[1],
+        },
+      ],
+      raw: trail,
+    });
+  });
+
+  it("an outcome without a state, from a server that predates the trail, reads as none; raw keeps it", async () => {
+    const older = { delivered: true, delivered_at: "2026-09-16T00:00:01Z", recorded_at: "2026-09-16T00:00:02Z" };
+    const { fetch } = fetchMock(() => jsonResponse(200, decisionView({ outcome: older as unknown as WireOutcome })));
+    const decision = await makeClient(fetch).getDecision(DECISION_ID);
+    expect(decision.outcome).toBeNull();
+    expect(decision.raw.outcome).toEqual(older);
+  });
+
+  it("is skipped by the LangChain callback handler, which reports without guard", async () => {
+    const { fetch, calls } = fetchMock([() => jsonResponse(200, decisionView({ decision_id: DECISION_ID, outcome: outcomeTrail() }))]);
+    const errors: unknown[] = [];
+    const handler = new GovernCallbackHandler({
+      govern: makeClient(fetch, { maxRetries: 0 }),
+      channel: "web_chat",
+      audience: "patient",
+      conversationId: "conv-1",
+      reportOutcome: true,
+      onError: (error) => errors.push(error),
+    });
+    await handler.handleLLMEnd({ generations: [[{ text: DRAFT }]] }, "run-1");
+    expect(calls.map((c) => c.url.pathname)).toEqual(["/api/v1/govern/evaluate"]);
+    expect(errors).toEqual([]);
+  });
+
+  it("is the same through the Vercel AI middleware: no report is posted for it", async () => {
+    const { fetch, calls } = fetchMock([() => jsonResponse(200, decisionView({ decision_id: DECISION_ID, outcome: outcomeTrail() }))]);
+    const middleware = withGovern({ govern: makeClient(fetch, { maxRetries: 0 }), channel: "web_chat", audience: "patient" });
+    await generate(middleware, "turn-1");
+    await tick();
+    expect(calls.filter((c) => c.url.pathname.endsWith("/outcome"))).toHaveLength(0);
+  });
+});
+
+/** One `wrapGenerate` call of the middleware on the draft, in conversation `conv-1`. */
+async function generate(middleware: ReturnType<typeof withGovern>, turnId: string): Promise<void> {
+  type Args = Parameters<NonNullable<typeof middleware.wrapGenerate>>[0];
+  const generated = { content: [{ type: "text", text: DRAFT }], finishReason: { unified: "stop", raw: "stop" }, usage: {}, warnings: [] };
+  await middleware.wrapGenerate!({
+    doGenerate: async () => generated as unknown as Awaited<ReturnType<Args["doGenerate"]>>,
+    doStream: async () => ({ stream: new ReadableStream() }) as unknown as Awaited<ReturnType<Args["doStream"]>>,
+    params: { prompt: [], providerOptions: { anybioGovern: { conversationId: "conv-1", turnId } } } as unknown as Args["params"],
+    model: {} as Args["model"],
+  });
+}
+

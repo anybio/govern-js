@@ -166,8 +166,11 @@ const reply = await govern.guard(
   { conversationId, turnId, channel: "${options.channel}", audience: "${options.audience}" },
 );
 // Empty when nothing is owed: an outbound hold with no holding line.
-if (reply.text !== "") await deliver(reply.text);
-await reply.ack();`,
+if (reply.text !== "") {
+  await deliver(reply.text);
+  // The record: what was written, hashed locally. No decision id when the API was unreachable.
+  if (reply.decisionId) await govern.reportOutcome(reply.decisionId, { kind: "released", at: new Date(), content: reply.text });
+}`,
   };
 }
 

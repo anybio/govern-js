@@ -11,7 +11,14 @@ export type paths = {
         };
         get: operations["list_applications"];
         put?: never;
-        /** Create an application and mint its first key. */
+        /**
+         * Create an application and mint its first key.
+         * @description The application belongs to the request's project: the project selected in
+         *     the console, or the key's own project. The body names no project; one that
+         *     still sends `project_id` is refused with `code: project_field_removed`. A
+         *     request with no project is refused with `code: project_required`, so every
+         *     application has a project from the moment it exists.
+         */
         post: operations["create_application"];
         delete?: never;
         options?: never;
@@ -196,8 +203,10 @@ export type paths = {
         get?: never;
         put?: never;
         /**
-         * Report what was delivered for a decision. One outcome per decision: a
-         *     replay that says the same thing is `200`, one that differs is `409`.
+         * Record an outcome event for a decision: `released`, `delivered`,
+         *     `discarded` or `failed`. One event per kind per decision, `failed`
+         *     excepted: a replay that says the same thing is `200`, a different event of
+         *     a kind already recorded is `409`.
          */
         post: operations["record_outcome"];
         delete?: never;
@@ -509,14 +518,14 @@ export type components = {
             default_mode: components["schemas"]["GovernMode"];
             /** Format: uuid */
             environment_id: string;
-            frequency_cap?: null | components["schemas"]["FrequencyCap"];
+            frequency_cap?: components["schemas"]["FrequencyCap"] | null;
             /**
              * @description True when the stored cap cannot be read. The cap then holds every turn
              *     (fail-closed), so `frequency_cap: null` alone would read as "no cap"
              *     while the gate is holding everything.
              */
             frequency_cap_unreadable: boolean;
-            handoff_routing?: null | components["schemas"]["RoutingPolicy"];
+            handoff_routing?: components["schemas"]["RoutingPolicy"] | null;
             /** Format: uuid */
             id: string;
             name: string;
@@ -524,7 +533,10 @@ export type components = {
             organization_id: number;
             /**
              * Format: int32
-             * @description Policy scope; `null` is the organization-level active policy.
+             * @description The project the application belongs to, set when it is created. Its
+             *     active policy decides the application's turns, else the environment's
+             *     default policy. `null` only for an older application in an environment
+             *     that had no project to give it.
              */
             project_id?: number | null;
             /** @description The red-flag categories the inbound screen runs with. */
@@ -556,6 +568,25 @@ export type components = {
             last_used_at?: string | null;
             /** Format: date-time */
             revoked_at?: string | null;
+        };
+        /**
+         * @description One item of the applications list: the application, and its decision
+         *     activity. Counts and a time only; no decision content.
+         */
+        ApplicationListItemDto: components["schemas"]["ApplicationDto"] & {
+            /**
+             * Format: int64
+             * @description Decision records in the trailing seven days, every mode, status and
+             *     decision value counted. A retried turn counts once. Equals the observe
+             *     report's `totals.decisions` over the same seven days.
+             */
+            decisions_7d: number;
+            /**
+             * Format: date-time
+             * @description When the application's most recent decision record was made (for a
+             *     transcript turn, when the turn was sent). `null` when it has none.
+             */
+            last_decision_at?: string | null;
         };
         CareHandoff: {
             /**
@@ -590,12 +621,25 @@ export type components = {
             escalation_due_at?: string | null;
             /** Format: uuid */
             id: string;
+            /**
+             * @description What the item is for. `general` is the messaging and follow-up item
+             *     every automated source joins; staff-opened and discharge items carry
+             *     their own kind. A patient has at most one active item of each kind.
+             */
+            kind: string;
             /** Format: int32 */
             organization_id: number;
             /** @description SHA-256 of the customer's opaque patient reference; never the reference. */
             patient_ref_hash?: string | null;
             /** @description Whether this item also pauses automated messaging to its subject. `automation_resumed_at == null` alone says only that a person owns the item (one per patient, whichever kind it is). Automation is paused while `automation_resumed_at == null && pauses_automation`. A red flag, an exhausted budget, a missing policy, an unknown wire outcome and the Govern route-to-human path all pause; an item that only owes a patient a reply does not. */
             pauses_automation: boolean;
+            /**
+             * Format: int32
+             * @description The project of the episode the hand-off was opened from. Null for a
+             *     hand-off opened without an episode, and for one about an application's
+             *     patient.
+             */
+            project_id?: number | null;
             queue_label: string;
             reason: string;
             resolution_note?: string | null;
@@ -603,7 +647,7 @@ export type components = {
             resolved_at?: string | null;
             /** Format: uuid */
             resolved_by?: string | null;
-            routing_snapshot?: null | components["schemas"]["Value"];
+            routing_snapshot?: components["schemas"]["Value"] | null;
             state: string;
             /** Format: date-time */
             updated_at: string;
@@ -631,6 +675,11 @@ export type components = {
             note?: string | null;
             /** Format: int32 */
             organization_id: number;
+            /**
+             * Format: int32
+             * @description The project of the event's hand-off.
+             */
+            project_id?: number | null;
             source_key: string;
         };
         ChannelBreakdown: components["schemas"]["Counts"] & {
@@ -638,15 +687,43 @@ export type components = {
         };
         /** @description A per-channel binding: the policy scope, the mode, and the consent requirement for one channel. An absent field means the channel's default. */
         ChannelPolicy: {
-            mode?: null | components["schemas"]["GovernMode"];
+            mode?: components["schemas"]["GovernMode"] | null;
             /**
              * Format: int32
              * @description The project whose active policy decides this channel; `null` means the
-             *     application's `project_id`.
+             *     application's own project. A policy belongs to one environment, so this
+             *     must be a live project of the organization in the application's
+             *     environment; any other is a `404`. Set from the console only: a request
+             *     made with a key may send back the value already stored, and may not
+             *     change it.
              */
             project_id?: number | null;
             /** @description Whether an outbound turn on this channel requires a `granted` consent on record; absent means the channel's default (`sms`, `voice` and `email` require it). */
             requires_consent?: boolean | null;
+        };
+        /**
+         * @description One term the gate matched in the evaluated text.
+         *
+         *     The evaluated text is the submitted content with leading and trailing
+         *     characters of the Unicode `White_Space` property removed (not the set
+         *     JavaScript's `trim` removes). Wherever a response carries that text, index
+         *     it rather than re-trimming. One entry per occurrence: a phrase that appears
+         *     twice is two matches with two ranges.
+         */
+        ClaimMatch: {
+            /** @description The vocabulary the entry belongs to. */
+            list: components["schemas"]["MatchList"];
+            /**
+             * @description The policy entry that matched, as stored (lower-case). The matched
+             *     text itself is at `range`, and may differ in case, inflection,
+             *     hyphenation or apostrophe.
+             */
+            phrase: string;
+            range?: components["schemas"]["MatchRange"] | null;
+            /** @description The policy author's reason for the entry; null when it has none. */
+            reason?: string | null;
+            /** @description How the match was found. */
+            source: components["schemas"]["MatchSource"];
         };
         /**
          * @description `POST /api/v1/govern/patients/consent`. The reference travels in the body,
@@ -658,7 +735,7 @@ export type components = {
              * @description When the patient granted or revoked; default now.
              */
             at?: string | null;
-            channel?: null | components["schemas"]["GovernChannel"];
+            channel?: components["schemas"]["GovernChannel"] | null;
             patient_ref: string;
             state: components["schemas"]["ConsentState"];
         };
@@ -673,9 +750,13 @@ export type components = {
             outcome: string;
         };
         /**
-         * @description Counts keyed by the raw gate decision (`allow`, `rewrite`,
-         *     `block_and_review`, `policy_missing`, `unavailable`) for observe turns, and
-         *     by the binding answer (`allow`, `hold`, `block`) for enforce turns.
+         * @description Counts keyed by the raw gate decision (`allow`, `flag`,
+         *     `block_and_review`, `policy_missing`, `unavailable`; `rewrite` for turns
+         *     recorded before `flag` replaced it) for observe turns, and
+         *     by the binding answer (`allow`, `hold`, `block`) for enforce turns. An
+         *     observe `flag` (or `rewrite`) for a clinician audience is counted as
+         *     `flagged` instead: the clinician would have received the draft with its
+         *     matches.
          */
         Counts: {
             enforced: {
@@ -685,16 +766,20 @@ export type components = {
                 [key: string]: number;
             };
         };
+        /**
+         * @description A new application. It belongs to the request's project, which the body
+         *     does not name: the project selected in the console, or the key's own
+         *     project. That project's active policy, else the environment's default
+         *     policy, decides the application's turns.
+         */
         CreateApplicationRequest: {
             channel_policies?: {
                 [key: string]: components["schemas"]["ChannelPolicy"];
             } | null;
-            default_mode?: null | components["schemas"]["GovernMode"];
-            frequency_cap?: null | components["schemas"]["FrequencyCap"];
-            handoff_routing?: null | components["schemas"]["RoutingPolicy"];
+            default_mode?: components["schemas"]["GovernMode"] | null;
+            frequency_cap?: components["schemas"]["FrequencyCap"] | null;
+            handoff_routing?: components["schemas"]["RoutingPolicy"] | null;
             name: string;
-            /** Format: int32 */
-            project_id?: number | null;
             /**
              * @description The red-flag categories the inbound screen runs with (`cardiac`,
              *     `respiratory`, `neuro_stroke`, `self_harm`). Default: all four.
@@ -730,26 +815,74 @@ export type components = {
              */
             decision_id?: string | null;
             /**
-             * @description Clinician audience only: the gate's term substitution, when there is
-             *     one to deliver. Never present for a patient audience.
+             * @description Clinician audience only, on a `flagged` decision: the draft as
+             *     evaluated, which is what to deliver. The service never rewrites a
+             *     draft, so this is your own content, trimmed. Never present for a
+             *     patient audience.
              */
             deliverable_content?: string | null;
             detected_claims: string[];
             disclosure_required: boolean;
-            handoff?: null | components["schemas"]["HandoffRef"];
+            /**
+             * @description The draft was delivered with flags: `allow` for a clinician audience
+             *     under a policy whose outcome is `flag`. Deliver the draft unchanged and
+             *     show the reader `matches`. `false` for a clean `allow` and for every
+             *     `hold` and `block`.
+             */
+            flagged: boolean;
+            handoff?: components["schemas"]["HandoffRef"] | null;
             /** @description The red-flag rules the inbound matched; rule ids and categories only. */
             inbound_flags: components["schemas"]["InboundFlag"][];
+            /**
+             * @description Each term behind a violation, positioned in the evaluated text. One
+             *     entry per occurrence, in reading order. Each carries the policy entry
+             *     (`phrase`), the list it belongs to, the policy author's `reason` (null
+             *     when the entry has none), how it was found (`source`; always `term`
+             *     today) and `range`, the span in UTF-16 code units with `end` exclusive.
+             *
+             *     The evaluated text is the `content` you sent with leading and trailing
+             *     characters of the Unicode `White_Space` property removed. That is not
+             *     what JavaScript's `String.prototype.trim` removes (it also removes
+             *     U+FEFF and keeps U+0085), so do not re-trim to find it: when
+             *     `deliverable_content` is present it is exactly the evaluated text, and
+             *     `deliverable_content.slice(range.start, range.end)` is the matched
+             *     text. Render a message-level flag for a match with no `range`. Empty on
+             *     decisions recorded before matches were.
+             */
+            matches: components["schemas"]["ClaimMatch"][];
             mode: components["schemas"]["GovernMode"];
             /** @description The model the caller named for this turn, and its version. Null when the caller named none; never inferred. */
             model?: string | null;
             model_version?: string | null;
-            outcome?: null | components["schemas"]["OutcomeView"];
-            policy?: null | components["schemas"]["PolicyRef"];
+            outcome?: components["schemas"]["OutcomeView"] | null;
+            policy?: components["schemas"]["PolicyRef"] | null;
             rationale?: string | null;
             reasons: string[];
             /** @description Present once a reviewer released the held content: what to deliver. */
             released_content?: string | null;
-            review_state?: null | components["schemas"]["ReviewState"];
+            /**
+             * Format: uuid
+             * @description The decision this turn retries, when it is a retry. Null otherwise.
+             */
+            retry_of?: string | null;
+            /**
+             * @description Your application may write ONE new draft for this turn and evaluate
+             *     it with `retry_of` set to this `decision_id`.
+             *
+             *     `true` only when this turn was stopped in enforce mode, for a patient,
+             *     because of the draft's own content (the `reasons` name a clinical
+             *     claim the program may not make, or a missing disclaimer), the stop
+             *     class is `uncertain`, the policy does not review every send, and the
+             *     hold is still pending. It is `false` for a `never_sendable` stop, for
+             *     every stop about the patient rather than the draft (an opt-out, a
+             *     consent, a frequency cap, a missing disclosure), for a missing policy,
+             *     for a turn that is itself a retry at the platform's limit, for a turn
+             *     whose inbound routed the patient to a person, and once a reviewer has
+             *     acted. Add the `reasons` and the policy's rules to your
+             *     model's instructions; this service never writes the new draft.
+             */
+            retryable: boolean;
+            review_state?: components["schemas"]["ReviewState"] | null;
             /**
              * @description Console deep link for the customer's own reviewers, present when the
              *     decision is in (or has been through) the review queue.
@@ -773,6 +906,25 @@ export type components = {
              *     One per stopped turn: each `evaluate` is one turn, so a second stopped draft in the same conversation is a second turn with its own answer.
              */
             send_holding_line: boolean;
+            /**
+             * @description Show your hold text in place of the stopped draft.
+             *
+             *     `true` when this turn was stopped (`hold` or `block` in enforce, not
+             *     released or rejected) and: the audience is `patient` and the channel is
+             *     in-session (`web_chat`, `app_message`, `voice`), where the patient is
+             *     waiting for the reply, whatever stopped the turn; or the audience is
+             *     `patient`, the channel is outbound (`sms`, `email`) and
+             *     `send_holding_line` is `true`; or the audience is `clinician`.
+             *
+             *     `false` on an outbound channel when no holding line is owed (send
+             *     nothing), on every `allow`, once a reviewer has released or rejected
+             *     the hold, once a retry of this turn or a turn that supersedes it has
+             *     been accepted (that turn's own field answers), and always in observe.
+             *     On a `retryable` turn, evaluate the retry first and show the hold text
+             *     only if the retry is stopped too. On an in-session channel the hold
+             *     text is the one reply: do not send a separate holding line there.
+             */
+            show_hold_text: boolean;
             status: components["schemas"]["DecisionStatus"];
             /**
              * @description Which of the two stopped classes this turn is: `never_sendable` | `uncertain`, null when nothing was stopped.
@@ -780,15 +932,35 @@ export type components = {
              *     In **enforce** it describes the `hold` the caller received: a never-sendable turn has no release path, so the application's own reviewers are told to record a replacement rather than wait for one. In **observe** it is read beside `would_have` and describes what the stop would have been: `would_have` keeps its documented vocabulary (the raw gate decision), and this carries the class the same turn was classified with.
              */
             stop_class?: string | null;
+            /**
+             * Format: uuid
+             * @description The decision that replaced this one: the turn that named it in
+             *     `supersedes`, or its retry. Null while nothing has replaced it. Read
+             *     from the `superseded` event in `outcome`.
+             */
+            superseded_by?: string | null;
+            /**
+             * @description The decisions this turn named in `supersedes` and replaced, in
+             *     ascending id order. Empty when it named none. The decision a retry
+             *     replaced is `retry_of`, not listed here.
+             */
+            supersedes: string[];
             turn_id: string;
+            /**
+             * @description Your reference for the patient turn, as sent on `evaluate` (or, on a
+             *     retry sent without one, the reference of the decision it retries).
+             *     Null when none was sent.
+             */
+            turn_ref?: string | null;
             /**
              * @description The signed webhook deliveries about this decision: the
              *     log, never the body.
              */
             webhook_deliveries: components["schemas"]["WebhookDeliveryView"][];
             /**
-             * @description Observe: the raw gate decision (`allow` | `rewrite` | `block_and_review`
-             *     | `policy_missing`) or `unavailable`. Null in enforce.
+             * @description Observe: the raw gate decision (`allow` | `flag` | `block_and_review`
+             *     | `policy_missing`) or `unavailable`. Null in enforce. Decisions
+             *     recorded before `flag` replaced `rewrite` keep `rewrite`.
              */
             would_have?: string | null;
             /** @description Observe: the screen matched and would have routed; no task was opened. */
@@ -823,6 +995,11 @@ export type components = {
              */
             ref: string;
         };
+        /**
+         * @description One turn to evaluate. A field this schema does not name is ignored, not
+         *     refused, so a misspelled `retry_of`, `turn_ref` or `supersedes` is a turn
+         *     that retries, groups and supersedes nothing.
+         */
         EvaluateRequest: {
             /**
              * Format: uuid
@@ -834,11 +1011,11 @@ export type components = {
             /** @description The draft the customer's AI produced. */
             content: string;
             conversation_id: string;
-            disclosure?: null | components["schemas"]["DisclosureAttachment"];
-            inbound?: null | components["schemas"]["InboundMessage"];
+            disclosure?: components["schemas"]["DisclosureAttachment"] | null;
+            inbound?: components["schemas"]["InboundMessage"] | null;
             /** @description Free JSON, stored and never evaluated. */
             metadata?: unknown;
-            mode_hint?: null | components["schemas"]["GovernMode"];
+            mode_hint?: components["schemas"]["GovernMode"] | null;
             /**
              * @description The model the caller's application ran for this turn, as the caller
              *     names it. Recorded, never interpreted: the platform does
@@ -854,11 +1031,54 @@ export type components = {
             /** @description The customer's opaque patient identifier. Stored only as a SHA-256. */
             patient_ref?: string | null;
             /**
+             * Format: uuid
+             * @description The decision this turn retries: a new draft written because that
+             *     decision came back `retryable`. It must name a decision of this
+             *     application and this conversation whose view says `retryable: true`,
+             *     and that has not been retried already; anything else is refused with
+             *     `400`, except `409` for a second retry of the same decision and for a
+             *     turn that was retryable until a reviewer released or rejected it, or
+             *     until another turn named it in `supersedes`. Two requests for one retry
+             *     under one `turn_id` record it once: the second is answered as a replay.
+             *     The new draft is judged exactly as any other turn. Send it with a NEW
+             *     `turn_id`. When the retry is `allow`, the hand-off the stopped turn
+             *     opened is resolved with the disposition `resolved_by_retry`, provided
+             *     that turn opened it, nothing else has joined it and nobody has claimed
+             *     it or acted on it.
+             */
+            retry_of?: string | null;
+            /**
+             * @description The decisions this turn replaces, at most 8: earlier attempts at the
+             *     same patient turn that were never heard (a speculative reply the voice
+             *     platform discarded). Each must be a decision of this application and
+             *     this conversation, named once, and not the decision in `retry_of`
+             *     (`400` otherwise). An enforce decision still being decided, a decision
+             *     with a `delivered` event, one a reviewer released or rejected, or one
+             *     another turn already superseded is a `409`. In the same step as this
+             *     turn is recorded, each named decision leaves the review queue if it was
+             *     held, and its outcome records a `superseded` event naming this
+             *     decision. When this turn is `allow`, the hand-off a named stopped turn
+             *     opened is resolved with the disposition `resolved_by_supersession`
+             *     (`resolved_by_retry` when the turn in `retry_of` shares it), on the
+             *     conditions a retry's is; otherwise it stays open with a note naming
+             *     this decision. A replay of this `turn_id` returns the stored decision
+             *     and applies nothing again.
+             */
+            supersedes?: string[] | null;
+            /**
              * @description The idempotency key per application: a replay returns the stored
              *     decision. Must not start with `govern:`, which is reserved for the
              *     rows the platform writes.
              */
             turn_id: string;
+            /**
+             * @description Your stable reference for the patient turn this draft answers: the
+             *     same value on every speculative re-send and retry of that turn, so the
+             *     attempts can be grouped. At most 128 printable characters. A retry
+             *     sent without one takes the reference of the decision it retries.
+             *     Stored as sent; never evaluated.
+             */
+            turn_ref?: string | null;
         };
         /**
          * @description One Govern decision that opened or joined an external hand-off: the
@@ -962,7 +1182,8 @@ export type components = {
             /** Format: uuid */
             id: string;
             /**
-             * @description Whether this hand-off also pauses automated messaging to the subject. `automation_resumed_at == null` says a person owns it;
+             * @description Whether this hand-off also pauses automated messaging to the subject.
+             *     `automation_resumed_at == null` says a person owns it;
              *     this says whether the application should stop sending meanwhile. The
              *     two are read together: still paused is
              *     `automation_resumed_at == null && pauses_automation`.
@@ -990,6 +1211,25 @@ export type components = {
             /** Format: date-time */
             received_at: string;
         };
+        /**
+         * @description Which vocabulary a match came from.
+         * @enum {string}
+         */
+        MatchList: "prohibited_claims" | "requires_disclaimer_for" | "wellness_clinical_terms" | "medication_instructions";
+        /**
+         * @description Where a match sits in the evaluated text, in UTF-16 code units (the unit
+         *     of JavaScript string indices). `start` is inclusive and `end` exclusive, so
+         *     `text.slice(start, end)` is the matched span.
+         */
+        MatchRange: {
+            end: number;
+            start: number;
+        };
+        /**
+         * @description How a match was found.
+         * @enum {string}
+         */
+        MatchSource: "term" | "semantic";
         /** @description A key at mint time: the metadata plus the secret, which is shown once. */
         MintedKeyDto: components["schemas"]["ApplicationKeyDto"] & {
             /** @description The raw key. This is its only appearance; store it server-side. */
@@ -1015,6 +1255,7 @@ export type components = {
             by_channel: components["schemas"]["ChannelBreakdown"][];
             by_model: components["schemas"]["ModelBreakdown"][];
             by_policy: components["schemas"]["PolicyBreakdown"][];
+            by_stop_class: components["schemas"]["StopClassBreakdown"][];
             /** Format: date-time */
             from: string;
             rates: components["schemas"]["Rates"];
@@ -1030,34 +1271,88 @@ export type components = {
         OptOutRequest: {
             /** Format: date-time */
             at?: string | null;
-            channel?: null | components["schemas"]["GovernChannel"];
+            channel?: components["schemas"]["GovernChannel"] | null;
             opted_out: boolean;
             patient_ref: string;
         };
-        OutcomeRequest: {
-            /** @description The customer delivered a message for this turn. */
-            delivered: boolean;
-            /** Format: date-time */
-            delivered_at: string;
-            /** @description SHA-256, hex, of the UTF-8 text delivered. Required when `delivered`. */
-            delivered_content_hash?: string | null;
-            /** @description The customer's own reference for the delivery. */
-            delivery_ref?: string | null;
-        };
-        OutcomeView: {
-            delivered: boolean;
-            /** Format: date-time */
-            delivered_at: string;
-            delivered_content_hash?: string | null;
+        /** @description One event in a decision's outcome trail. */
+        OutcomeEvent: {
+            /**
+             * Format: date-time
+             * @description When it happened, as the writer said.
+             */
+            at: string;
+            /** @description SHA-256 hex of the text; on `released` and `delivered` only. */
+            content_hash?: string | null;
             delivery_ref?: string | null;
             /**
-             * @description Whether the delivered hash matches the content the record says was
-             *     deliverable. `null` when nothing was delivered or there was nothing to
-             *     compare against.
+             * @description Whether `content_hash` matches the content the record says was
+             *     deliverable. `null` with no hash, or when there was nothing to compare
+             *     against. Computed when the event is recorded; a later release does not
+             *     change it.
              */
             hash_matches_release?: boolean | null;
-            /** Format: date-time */
+            kind: components["schemas"]["OutcomeKind"];
+            reason?: string | null;
+            /**
+             * Format: date-time
+             * @description When the service recorded it.
+             */
             recorded_at: string;
+            source: components["schemas"]["OutcomeSource"];
+            /**
+             * Format: uuid
+             * @description The decision that replaced this one; on `superseded` only.
+             */
+            superseded_by?: string | null;
+        };
+        /**
+         * @description What happened to a decision's reply: the kind of an event, and, for the
+         *     trail as a whole, its derived `state`.
+         * @enum {string}
+         */
+        OutcomeKind: "released" | "delivered" | "discarded" | "superseded" | "failed";
+        OutcomeRequest: {
+            /**
+             * Format: date-time
+             * @description When it happened.
+             */
+            at: string;
+            /**
+             * @description SHA-256, hex, of the UTF-8 text released or delivered. Required for
+             *     `released` and `delivered`; refused on any other kind.
+             */
+            content_hash?: string | null;
+            /** @description Your own reference for the delivery (a message id, a row id). */
+            delivery_ref?: string | null;
+            /**
+             * @description `released`, `delivered`, `discarded` or `failed`. `superseded` is
+             *     reserved for the service and refused here.
+             */
+            kind: components["schemas"]["OutcomeKind"];
+            /**
+             * @description A short reason code, for example why a reply was discarded or why an
+             *     attempt failed. Never message text.
+             */
+            reason?: string | null;
+        };
+        /**
+         * @description Who wrote an event.
+         * @enum {string}
+         */
+        OutcomeSource: "caller" | "retry" | "supersedes" | "channel";
+        /**
+         * @description A decision's outcome: the state its events add up to, and the events in
+         *     the order they were recorded.
+         */
+        OutcomeView: {
+            events: components["schemas"]["OutcomeEvent"][];
+            /**
+             * @description The kind that decides where the outcome stands, derived from the
+             *     events and never stored: `delivered` if a delivered event exists, else
+             *     `superseded`, else `discarded`, else `failed`, else `released`.
+             */
+            state: components["schemas"]["OutcomeKind"];
         };
         /**
          * @description Every field optional; only the ones present change. `channel_policies`
@@ -1067,15 +1362,10 @@ export type components = {
             channel_policies?: {
                 [key: string]: components["schemas"]["ChannelPolicy"];
             } | null;
-            default_mode?: null | components["schemas"]["GovernMode"];
-            frequency_cap?: null | components["schemas"]["FrequencyCap"];
-            handoff_routing?: null | components["schemas"]["RoutingPolicy"];
+            default_mode?: components["schemas"]["GovernMode"] | null;
+            frequency_cap?: components["schemas"]["FrequencyCap"] | null;
+            handoff_routing?: components["schemas"]["RoutingPolicy"] | null;
             name?: string | null;
-            /**
-             * Format: int32
-             * @description `null` clears the project scope back to the organization policy.
-             */
-            project_id?: number | null;
             /** @description Replaces the whole list when present; must not be empty. */
             red_flag_categories?: string[] | null;
             webhook_url?: string | null;
@@ -1110,7 +1400,7 @@ export type components = {
             consent_state: string;
             /** @description The most recent transitions, newest first (at most twenty). */
             events: components["schemas"]["PatientEventView"][];
-            frequency?: null | components["schemas"]["FrequencyView"];
+            frequency?: components["schemas"]["FrequencyView"] | null;
             /** Format: date-time */
             last_contact_at?: string | null;
             opted_out: boolean;
@@ -1142,13 +1432,39 @@ export type components = {
             patient_states_removed: number;
         };
         /**
-         * @description Fractions in `[0, 1]`, never percentages: the share of decided observe
-         *     turns the gate would have withheld, and of decided enforce turns it held.
+         * @description Fractions in `[0, 1]`, never percentages. Each is `null` when its
+         *     denominator is zero.
          */
         Rates: {
-            /** Format: double */
+            /**
+             * Format: double
+             * @description The share of answered enforce turns whose answer was not `allow`, over
+             *     `totals.answered_enforce`. Turns the gate did not answer are on
+             *     neither side of it.
+             */
             enforced_held?: number | null;
-            /** Format: double */
+            /**
+             * Format: double
+             * @description The share of every record in the window that the gate did not answer:
+             *     `totals.unavailable` over `totals.decisions`.
+             */
+            unanswered?: number | null;
+            /**
+             * Format: double
+             * @description The share of answered observe turns that would have been delivered
+             *     with flags: a `flag` for a clinician audience, over
+             *     `totals.answered_observe`.
+             */
+            would_have_flagged?: number | null;
+            /**
+             * Format: double
+             * @description The share of answered observe turns whose would-have answer was not
+             *     `allow`, over `totals.answered_observe`. Turns the gate did not answer
+             *     are on neither side of it. A `flag` for a clinician audience is not
+             *     withheld (the clinician receives the draft with its matches) and is
+             *     counted in `would_have_flagged` instead; a `flag` for a patient is
+             *     withheld.
+             */
             would_have_withheld?: number | null;
         };
         RecordDisclosureRequest: {
@@ -1211,7 +1527,27 @@ export type components = {
             /** Format: int64 */
             response_seconds: number;
         };
+        /**
+         * @description The same counts, per stop class: `never_sendable` or `uncertain` for the
+         *     turns that were stopped (in observe, that would have been stopped), and a
+         *     bucket with a null class for the turns that were not, or not yet answered.
+         */
+        StopClassBreakdown: components["schemas"]["Counts"] & {
+            stop_class?: string | null;
+        };
         Totals: {
+            /**
+             * Format: int64
+             * @description Enforce records the gate answered: neither pending nor unavailable.
+             *     The denominator of `rates.enforced_held`.
+             */
+            answered_enforce: number;
+            /**
+             * Format: int64
+             * @description Observe records the gate answered: neither pending nor unavailable.
+             *     The denominator of `rates.would_have_withheld`.
+             */
+            answered_observe: number;
             /**
              * Format: int64
              * @description Every decision record in the window, any mode or status.
@@ -1229,8 +1565,24 @@ export type components = {
              *     live call; always observe, counted in `observe` as well.
              */
             transcript: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Records the gate did not answer, in either mode. The caller received
+             *     its mode's fallback; these records are in neither rate.
+             */
             unavailable: number;
+            /**
+             * Format: int64
+             * @description Answered observe records that would have been delivered to a
+             *     clinician with flags: the numerator of `rates.would_have_flagged`.
+             */
+            would_have_flagged: number;
+            /**
+             * Format: int64
+             * @description Answered observe records whose would-have answer withheld the draft:
+             *     the numerator of `rates.would_have_withheld`.
+             */
+            would_have_withheld: number;
         };
         TranscriptBatch: {
             /**
@@ -1286,7 +1638,7 @@ export type components = {
             unavailable: number;
             /**
              * @description Raw gate decisions over the evaluated turns that are decided:
-             *     `allow`, `rewrite`, `block_and_review`, `policy_missing`,
+             *     `allow`, `flag` (`rewrite` before it replaced it), `block_and_review`, `policy_missing`,
              *     `unavailable`.
              */
             would_have: {
@@ -1322,8 +1674,8 @@ export type components = {
             conversation_id: string;
             /** Format: uuid */
             decision_id?: string | null;
-            decision_status?: null | components["schemas"]["DecisionStatus"];
-            disposition?: null | components["schemas"]["TurnDisposition"];
+            decision_status?: components["schemas"]["DecisionStatus"] | null;
+            disposition?: components["schemas"]["TurnDisposition"] | null;
             /** Format: int32 */
             position: number;
             reasons: string[];
@@ -1386,23 +1738,40 @@ export interface operations {
     list_applications: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description List this project's applications only. It must be a live project of the organization in this environment. Omit it for every project's. */
+                "X-Project-Id"?: number | null;
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Applications in the caller's organization and environment */
+            /** @description Applications in the caller's organization and environment, each with its decision activity; under a project, that project's only */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplicationDto"][];
+                    "application/json": components["schemas"]["ApplicationListItemDto"][];
                 };
             };
-            /** @description Requires an organization admin session or an Admin developer key */
+            /** @description `X-Project-Id` is not one positive project id (`code: invalid_project_id`), or a `project_id` or `project_key` query parameter was sent (`code: project_field_removed`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires a signed-in member of the organization or an Admin developer key */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request's project is not a live project of this organization in this environment (`code: project_not_in_scope`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1413,7 +1782,10 @@ export interface operations {
     create_application: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The project the application belongs to, for a signed-in console session. It must be a live project of the organization in this environment. A request with no project is refused with `code: project_required`. */
+                "X-Project-Id"?: number | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -1423,7 +1795,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Application created; the key secret appears only here */
+            /** @description Application created in the request's project; the key secret appears only here */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1432,15 +1804,22 @@ export interface operations {
                     "application/json": components["schemas"]["CreateApplicationResponse"];
                 };
             };
-            /** @description Invalid name, channel, project scope or webhook URL */
+            /** @description Invalid name, channel or webhook URL; `code: project_field_removed`, the body names a project; or `code: project_required`, the request has no project */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Requires an organization admin session or an Admin developer key */
+            /** @description Requires an organization admin session or an Admin developer key; or `code: channel_project_console_only`, a key named a `channel_policies` project */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request's project, or a `channel_policies` project, is not a live project of this organization in this environment */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1458,7 +1837,10 @@ export interface operations {
     get_application: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1467,6 +1849,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1475,7 +1858,14 @@ export interface operations {
                     "application/json": components["schemas"]["ApplicationDto"];
                 };
             };
-            /** @description No such application in this organization and environment */
+            /** @description Requires a signed-in member of the organization or an Admin developer key */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1487,7 +1877,10 @@ export interface operations {
     patch_application: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1500,6 +1893,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1508,14 +1902,21 @@ export interface operations {
                     "application/json": components["schemas"]["ApplicationDto"];
                 };
             };
-            /** @description Invalid name, channel, project scope or webhook URL */
+            /** @description Invalid name, channel or webhook URL; or `code: project_field_removed`, the body names a project (an application does not move between projects) */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description `code: channel_project_console_only`: a key's write would change a `channel_policies` project */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same, or a `channel_policies` project is not a live project of this organization in this environment */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1534,7 +1935,10 @@ export interface operations {
     list_application_keys: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1552,7 +1956,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApplicationKeyDto"][];
                 };
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1564,7 +1968,10 @@ export interface operations {
     rotate_application_key: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1594,7 +2001,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1611,7 +2018,10 @@ export interface operations {
                 /** @description Exclusive end, RFC 3339; default now */
                 to?: string;
             };
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1620,6 +2030,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1635,7 +2046,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description Requires a signed-in member of the organization or an Admin developer key */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1652,7 +2070,10 @@ export interface operations {
                 /** @description Exclusive end, RFC 3339; default now */
                 to?: string;
             };
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1677,14 +2098,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Requires an organization admin session or an Admin developer key */
+            /** @description Requires a signed-in member of the organization or an Admin developer key */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1701,7 +2122,10 @@ export interface operations {
                 /** @description Exclusive end, RFC 3339; default now */
                 to?: string;
             };
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1726,14 +2150,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Requires an organization admin session or an Admin developer key */
+            /** @description Requires a signed-in member of the organization or an Admin developer key */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1745,7 +2169,10 @@ export interface operations {
     purge_application_patients: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1754,6 +2181,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1762,7 +2190,7 @@ export interface operations {
                     "application/json": components["schemas"]["PurgeResponse"];
                 };
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1774,7 +2202,10 @@ export interface operations {
     rotate_webhook_secret: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. An application of another project answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Application id */
                 application_id: string;
@@ -1799,7 +2230,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such application in this organization and environment */
+            /** @description No such application in this organization and environment, or an application of another project (for a credential, and for the console with `X-Project-Id`), which answers the same */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1820,6 +2251,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1860,7 +2292,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The same outcome was already recorded */
+            /** @description The same event was already recorded */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1869,7 +2301,7 @@ export interface operations {
                     "application/json": components["schemas"]["DecisionView"];
                 };
             };
-            /** @description Outcome recorded */
+            /** @description Event recorded */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1878,7 +2310,7 @@ export interface operations {
                     "application/json": components["schemas"]["DecisionView"];
                 };
             };
-            /** @description Invalid hash or delivery reference, or delivered without a hash */
+            /** @description `superseded` sent by a caller; a hash missing on released or delivered, sent on another kind, or not 64 hex characters; a blank, oversized or control-character delivery_ref or reason */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1899,8 +2331,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description A different outcome is already recorded */
+            /** @description A different event of this kind is already recorded */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An unknown kind, or a body that is not the request shape */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1993,7 +2432,7 @@ export interface operations {
                     "application/json": components["schemas"]["DecisionView"];
                 };
             };
-            /** @description Invalid identifiers, content, metadata, or an audience not allowed on the channel */
+            /** @description Invalid identifiers, content, metadata or `turn_ref`, an audience not allowed on the channel, a `retry_of` that names no retryable decision of this conversation or names one for another `patient_ref`, or a `supersedes` over 8 ids, naming a decision twice, naming the `retry_of` decision, or naming a decision of another application, conversation or `patient_ref` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2002,6 +2441,20 @@ export interface operations {
             };
             /** @description Not an application key, or a key not bound to the named application */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A `retry_of` that was already retried, or that names a turn that was retryable until a reviewer released or rejected it, another turn named it in `supersedes`, or a `delivered` event was reported on it; a `supersedes` naming an enforce decision still being decided, a decision that was delivered, one a reviewer released or rejected, or one another turn already superseded */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A body that does not match the schema: an unknown channel or audience token, a missing or mistyped field. A field the schema does not name is ignored, not refused: check the spelling of `retry_of`, `turn_ref` and `supersedes` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2023,12 +2476,16 @@ export interface operations {
                 /** @description queued | claimed | resolved */
                 status?: string;
             };
-            header?: never;
+            header?: {
+                /** @description List the hand-offs of this project's applications only; a staff `application_id` of another project lists nothing. Omit it for every project's. */
+                "X-Project-Id"?: number | null;
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2037,8 +2494,22 @@ export interface operations {
                     "application/json": components["schemas"]["HandoffList"];
                 };
             };
+            /** @description A `project_id` or `project_key` query parameter (`code: project_field_removed`), or a malformed `X-Project-Id` (`code: invalid_project_id`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Not an application key or a staff session of the organization */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `X-Project-Id` names no live project of this organization and environment (`code: project_not_in_scope`) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2049,7 +2520,10 @@ export interface operations {
     handoff_detail: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. A hand-off of another project's application answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Hand-off id */
                 handoff_id: string;
@@ -2058,6 +2532,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2073,7 +2548,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No such external hand-off in this organization and environment */
+            /** @description No such external hand-off in this organization and environment, or, for staff, one of another project's application */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2085,7 +2560,10 @@ export interface operations {
     claim_handoff: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. A hand-off of another project's application answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Hand-off id */
                 handoff_id: string;
@@ -2098,6 +2576,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2113,6 +2592,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not Found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2131,7 +2611,10 @@ export interface operations {
     contact_handoff: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. A hand-off of another project's application answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Hand-off id */
                 handoff_id: string;
@@ -2144,6 +2627,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2159,18 +2643,21 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Forbidden */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Not Found */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2182,7 +2669,10 @@ export interface operations {
     resolve_handoff: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. A hand-off of another project's application answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Hand-off id */
                 handoff_id: string;
@@ -2195,6 +2685,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2203,24 +2694,28 @@ export interface operations {
                     "application/json": components["schemas"]["CareHandoff"];
                 };
             };
+            /** @description Bad Request */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Forbidden */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Not Found */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2232,7 +2727,10 @@ export interface operations {
     resume_handoff: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The console's selected project. A hand-off of another project's application answers as one that does not exist. */
+                "X-Project-Id"?: number | null;
+            };
             path: {
                 /** @description Hand-off id */
                 handoff_id: string;
@@ -2245,6 +2743,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2253,24 +2752,28 @@ export interface operations {
                     "application/json": components["schemas"]["CareHandoff"];
                 };
             };
+            /** @description Bad Request */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Forbidden */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Not Found */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
+            /** @description Conflict */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2375,6 +2878,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2458,6 +2962,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2494,6 +2999,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2534,6 +3040,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;

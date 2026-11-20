@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { GovernCallbackHandler, RESPONSE_METADATA_KEY, governed } from "../src/langchain";
 import { PROVIDER_METADATA_KEY, withGovern, type LanguageModelCallOptions, type StreamPart } from "../src/vercel-ai";
-import { DRAFT, collect, decisionView, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
+import { DRAFT, collect, decisionView, fetchMock, jsonResponse, makeClient } from "./helpers";
 
 /** The evaluate request body of the first call. */
 function evaluateBody(calls: { url: URL; json: unknown }[]): Record<string, unknown> {
@@ -111,7 +111,7 @@ describe("the Vercel AI middleware names the model", () => {
   });
 
   it("wrapStream (clinician) does the same on the trailing evaluation", async () => {
-    const { fetch, calls } = fetchMock(() => jsonResponse(200, decisionView({ audience: "clinician" })));
+    const { fetch, calls, waitForCall } = fetchMock(() => jsonResponse(200, decisionView({ audience: "clinician" })));
     const middleware = withGovern({ govern: makeClient(fetch), channel: "web_chat", audience: "clinician", reportOutcome: false });
     const { stream } = await middleware.wrapStream!({
       doStream: async () => ({ stream: streamOf(streamParts("gpt-4o-2024-08-06")) }),
@@ -120,7 +120,7 @@ describe("the Vercel AI middleware names the model", () => {
       model: wrappedModel as unknown as WrapStreamArgs["model"],
     });
     await collect(stream);
-    await tick();
+    await waitForCall("evaluate");
     expect(evaluateBody(calls)).toMatchObject({ model: "gpt-4o", model_version: "gpt-4o-2024-08-06" });
   });
 

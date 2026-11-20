@@ -4,9 +4,9 @@ Every chatbot streams, and a gate cannot approve text it has not seen. This page
 
 ## The rule, per audience
 
-**Patient audience: buffer and release.** The whole stream is held until the model finishes, the full text is evaluated once, and then one of two things is emitted: the original parts, replayed in order (allow), or the draft replaced (hold, block, or the API unreachable while the channel is in enforce): a single text block carrying the hold message when `showHoldText` is true, which is every hold on `web_chat` and `app_message`, and no text at all when it is false, which is an outbound channel (`sms`, `voice`, `email`) with no holding line owed. No token reaches the patient before the decision. The patient sees a typing state for as long as the model would have taken plus one round trip to the gate.
+**Patient audience: buffer and release.** The whole stream is held until the model finishes, the full text is evaluated once, and then one of two things is emitted: the original parts, replayed in order (allow), or the draft replaced (hold, block, or the API unreachable while the channel is in enforce): a single text block carrying the hold message when `showHoldText` is true, which is every hold on `web_chat`, `app_message` and `voice`, and no text at all when it is false, which is an outbound channel (`sms`, `email`) with no holding line owed. No token reaches the patient before the decision. The patient sees a typing state for as long as the model would have taken plus one round trip to the gate.
 
-**Clinician audience: pass through with a trailing evaluation.** Tokens stream as they arrive. When the stream ends, the full text is evaluated and the outcome is recorded with the hash of what actually went out. If the gate would have substituted terms or held the message, the record says so and the reviewer sees it; the clinician already has the text. Use this only where the reader is a clinician by the channel's definition.
+**Clinician audience: pass through with a trailing evaluation.** Tokens stream as they arrive. When the stream ends, the full text is evaluated and the text that went out is recorded as `released`, with its hash. If the gate would have substituted terms or held the message, the record says so and the reviewer sees it; the clinician already has the text. Use this only where the reader is a clinician by the channel's definition.
 
 The same rule applies to `guard` when you stream yourself: collect the tokens, call `guard` with the full text, then send `reply.text`.
 
@@ -22,7 +22,7 @@ const model = wrapLanguageModel({
 `wrapStream` returns a new `ReadableStream` in front of the provider's:
 
 - patient: reads the source to the end, accumulates the `text-delta` parts, calls `guard` with the joined text, then either enqueues every buffered part unchanged (allow) or enqueues the source's `stream-start` and `response-metadata` parts, then synthetic `text-start`, `text-delta` (the hold message), `text-end` when `showHoldText` is true (none of the three when it is false), then the original `finish` part. Tool-call parts are dropped on a hold: a tool call the gate did not see act on the patient's behalf is not something to let through beside a hold message.
-- clinician: a `TransformStream` that forwards every part as it arrives and, on flush, calls `guard` with the accumulated text and reports the outcome with that text.
+- clinician: a `TransformStream` that forwards every part as it arrives and, on flush, calls `guard` with the accumulated text and records that text as `released`.
 
 The decision is attached to the `finish` part as `providerMetadata.anybioGovern`:
 
@@ -34,9 +34,9 @@ If the source stream errors before it ends, the wrapped stream errors too and no
 
 ## When the patient leaves
 
-A patient closing the tab cancels the response stream, and a buffered turn is the one most likely to be cancelled: the whole generation happens before the first token. Cancelling the wrapped stream cancels the provider's stream through the reader that holds it, so the model stops generating rather than finishing a message nobody will read. Nothing buffered is emitted.
+A patient closing the tab cancels the response stream, and a buffered turn is the one most likely to be cancelled: the whole generation happens before the first token. Cancelling the wrapped stream cancels the provider's stream through the reader that holds it, so the model stops generating and does not finish a message nobody will read. Nothing buffered is emitted.
 
-What the gate does depends on when the cancel lands. Before the evaluate call, there is no call: nothing was delivered, so there is nothing to gate or record. While the gate is deciding, the decision still lands on the record and the outcome is reported as **not delivered**, because the decision exists and nothing reached the patient; without that report the next turn on the conversation would auto-ack it as delivered. Nothing is enqueued after the cancel, and no callback of yours can turn any of this into an unhandled rejection: `onDecision` and `onError` are called inside a guard, and a throw from either is passed to `onError` and otherwise ignored.
+What the gate does depends on when the cancel lands. Before the evaluate call, there is no call: nothing was delivered, so there is nothing to gate or record. While the gate is deciding, the decision still lands on the record and the outcome is recorded as **discarded** (reason `cancelled`), because the decision exists and nothing reached the patient. Nothing is enqueued after the cancel, and no callback of yours can turn any of this into an unhandled rejection: `onDecision` and `onError` are called inside a guard, and a throw from either is passed to `onError` and otherwise ignored.
 
 A stream with no text (a tool call only) is passed through without an evaluate call.
 

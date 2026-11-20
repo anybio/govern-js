@@ -5,67 +5,45 @@ import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../src/crypto";
 import { IN_SESSION_CHANNELS, isInSessionChannel } from "../src/index";
 import { GovernCallbackHandler, RESPONSE_METADATA_KEY, governed } from "../src/langchain";
-import type { Channel, WireDecision } from "../src/types";
+import { CHANNELS, OUTBOUND_CHANNELS, isOutboundChannel, type Channel, type WireDecision } from "../src/types";
 import { PROVIDER_METADATA_KEY, withGovern, type LanguageModelCallOptions, type StreamPart } from "../src/vercel-ai";
-import { DECISION_ID, DRAFT, HOLD, collect, decisionView, fetchMock, jsonResponse, makeClient, tick } from "./helpers";
+import { DECISION_ID, DRAFT, HOLD, collect, decisionView, fetchMock, jsonResponse, makeClient, olderServer } from "./helpers";
 
 /**
- * The channel rule, for the patient audience. In-session channels
- * (`web_chat`, `app_message`) show the hold text on every hold; outbound
- * channels (`sms`, `voice`, `email`) and any value this version does not know
- * follow `sendHoldingLine`, and hand the caller nothing (`text` empty) when it
- * is false. A clinician hold shows the hold text on every channel.
+ * The channel rule. For a patient audience, the in-session channels
+ * (`web_chat`, `app_message`, `voice`) show the hold text on every stopped
+ * turn; the outbound ones (`sms`, `email`) and any value this version does
+ * not know show it exactly when a holding line is owed, and hand the caller
+ * nothing (`text` empty) otherwise. A clinician stop shows the hold text on
+ * every channel.
+ *
+ * The cells are the API's: each row is a stop the API's own channel table
+ * states, with the `(send_holding_line, show_hold_text)` pair it answers. The
+ * SDK must hand back the same pair as `(sendHoldingLine, showHoldText)` when
+ * the API sends `show_hold_text`, and the channel rule must reach the same
+ * pair when a server that predates the field does not.
  */
 
 const UNKNOWN = "carrier_pigeon" as Channel;
-const IN_SESSION: Channel[] = ["web_chat", "app_message"];
-const OUTBOUND: Channel[] = ["sms", "voice", "email", UNKNOWN];
-const ALL: Channel[] = [...IN_SESSION, ...OUTBOUND];
+
+/** The API's channel classes, spelled out and not read from the SDK, so a flipped class fails here. */
+const CHANNEL_CLASSES: readonly (readonly [Channel, boolean])[] = [
+  ["sms", false],
+  ["app_message", true],
+  ["web_chat", true],
+  ["voice", true],
+  ["email", false],
+];
+/** Every class above, plus a value this version does not know, which reads as outbound. */
+const EVERY: readonly (readonly [Channel, boolean])[] = [...CHANNEL_CLASSES, [UNKNOWN, false]];
 
 const outcomeCalls = (calls: { url: URL; json: unknown }[]) => calls.filter((c) => c.url.pathname.endsWith("/outcome"));
 
-/** The four holds every channel is checked against. `null` is the API unreachable. */
-const HOLDS: Record<string, (channel: Channel) => WireDecision | null> = {
-  "a normal hold with send_holding_line true": (channel) =>
-    decisionView({
-      channel,
-      decision: "hold",
-      reasons: ["prohibited_claim"],
-      stop_class: "never_sendable",
-      send_holding_line: true,
-      review_state: "pending",
-    }),
-  "the API unreachable": () => null,
-  "patient_state_unavailable": (channel) =>
-    decisionView({
-      channel,
-      status: "unavailable",
-      decision: "hold",
-      reasons: ["gate_unavailable", "patient_state_unavailable"],
-      stop_class: "uncertain",
-      policy: null,
-      send_holding_line: false,
-    }),
-  "a released hold": (channel) =>
-    decisionView({
-      channel,
-      decision: "hold",
-      reasons: ["prohibited_claim"],
-      stop_class: "uncertain",
-      review_state: "released",
-      released_content: "Reviewed reply.",
-      // A server that says otherwise is overruled: a released hold owes no holding line.
-      send_holding_line: true,
-    }),
-};
-
-/** Whether the API, left to itself, owes a holding line on this hold. */
-const OWES_HOLDING_LINE: Record<string, boolean> = {
-  "a normal hold with send_holding_line true": true,
-  "the API unreachable": false,
-  "patient_state_unavailable": false,
-  "a released hold": false,
-};
+/** What an adapter records for a hold: `released` with the hold text when it showed, `discarded` when it handed over nothing. */
+const handedOverReport = async (shows: boolean) =>
+  shows
+    ? { kind: "released", at: expect.any(String), content_hash: await sha256Hex(HOLD) }
+    : { kind: "discarded", at: expect.any(String), reason: "nothing_to_send" };
 
 function clientFor(view: WireDecision | null) {
   const mock = fetchMock((call) => {
@@ -76,119 +54,251 @@ function clientFor(view: WireDecision | null) {
   return { ...mock, govern: makeClient(mock.fetch, { maxRetries: 0 }) };
 }
 
+type Pair = readonly [sendHoldingLine: boolean, showHoldText: boolean];
+
+interface Row {
+  /** The decision view the API sends on this channel. */
+  view: (channel: Channel) => WireDecision;
+  /** The API's `(send_holding_line, show_hold_text)` for the cell. */
+  api: (inSession: boolean) => Pair;
+}
+
+const stopped = (channel: Channel, overrides: Partial<WireDecision>): WireDecision =>
+  decisionView({ channel, decision: "hold", stop_class: "uncertain", ...overrides });
+
+/** The patient-audience stops of the API's channel table, every one on every channel. */
+const PATIENT_ROWS: Record<string, Row> = {
+  "a normal hold, a holding line owed": {
+    view: (channel) =>
+      stopped(channel, { reasons: ["prohibited_claim", "held_for_review"], stop_class: "never_sendable", review_state: "pending", send_holding_line: true }),
+    api: () => [true, true],
+  },
+  "the fail-closed hold with gate_unavailable alone": {
+    view: (channel) => stopped(channel, { status: "unavailable", reasons: ["gate_unavailable"], policy: null, send_holding_line: true }),
+    api: () => [true, true],
+  },
+  "the patient state unread, no holding line owed": {
+    view: (channel) =>
+      stopped(channel, { status: "unavailable", reasons: ["gate_unavailable", "patient_state_unavailable"], policy: null, send_holding_line: false }),
+    api: (inSession) => [false, inSession],
+  },
+  "an opted-out patient, no holding line owed": {
+    view: (channel) => stopped(channel, { decision: "block", reasons: ["opted_out"], stop_class: null, policy: null, send_holding_line: false }),
+    api: (inSession) => [false, inSession],
+  },
+  "a revoked consent, no holding line owed": {
+    view: (channel) => stopped(channel, { decision: "block", reasons: ["consent_revoked"], stop_class: null, policy: null, send_holding_line: false }),
+    api: (inSession) => [false, inSession],
+  },
+  "a frequency-cap hold, no holding line owed": {
+    view: (channel) => stopped(channel, { reasons: ["frequency_cap"], stop_class: null, policy: null, send_holding_line: false }),
+    api: (inSession) => [false, inSession],
+  },
+  "a released hold": {
+    view: (channel) =>
+      stopped(channel, { reasons: ["prohibited_claim"], review_state: "released", released_content: "Reviewed reply.", send_holding_line: false }),
+    api: () => [false, false],
+  },
+  "a rejected hold": {
+    view: (channel) => stopped(channel, { reasons: ["prohibited_claim"], review_state: "rejected", send_holding_line: false }),
+    api: () => [false, false],
+  },
+};
+
 describe("isInSessionChannel", () => {
-  it("classifies web_chat and app_message as in-session, and everything else as outbound", () => {
-    expect(IN_SESSION_CHANNELS).toEqual(["web_chat", "app_message"]);
-    for (const channel of IN_SESSION) expect(isInSessionChannel(channel), channel).toBe(true);
-    for (const channel of OUTBOUND) expect(isInSessionChannel(channel), channel).toBe(false);
-    for (const value of [undefined, null, 7, "", "WEB_CHAT", " web_chat"]) expect(isInSessionChannel(value)).toBe(false);
+  it("classifies web_chat, app_message and voice as in-session, and everything else as outbound", () => {
+    expect(IN_SESSION_CHANNELS).toEqual(["web_chat", "app_message", "voice"]);
+    for (const [channel, inSession] of EVERY) expect(isInSessionChannel(channel), channel).toBe(inSession);
+    for (const value of [undefined, null, 7, "", "WEB_CHAT", " web_chat", "VOICE"]) expect(isInSessionChannel(value)).toBe(false);
+  });
+
+  it("derives the known outbound channels from the same list: sms and email, and an unknown value is neither", () => {
+    expect(OUTBOUND_CHANNELS).toEqual(["sms", "email"]);
+    expect([...IN_SESSION_CHANNELS, ...OUTBOUND_CHANNELS].sort()).toEqual([...CHANNELS].sort());
+    for (const [channel, inSession] of CHANNEL_CLASSES) expect(isOutboundChannel(channel), channel).toBe(!inSession);
+    expect(isOutboundChannel(UNKNOWN)).toBe(false);
+    expect(isInSessionChannel(UNKNOWN)).toBe(false);
   });
 });
 
-describe("guard: the hold text by channel", () => {
-  for (const channel of ALL) {
-    const inSession = isInSessionChannel(channel);
-    for (const [name, build] of Object.entries(HOLDS)) {
-      const owed = OWES_HOLDING_LINE[name]!;
-      const shows = inSession || owed;
-      it(`${channel}: ${name} ${shows ? "shows the hold text" : "hands back nothing"}`, async () => {
-        const view = build(channel);
+describe("guard: the hold text by channel, cell for cell with the API", () => {
+  for (const [channel, inSession] of EVERY) {
+    for (const [name, row] of Object.entries(PATIENT_ROWS)) {
+      const [owed, shows] = row.api(inSession);
+      it(`${channel}: ${name}: ${shows ? "shows the hold text" : "hands back nothing"}`, async () => {
+        const view = row.view(channel);
+        // The fixture says what the API says for this cell.
+        expect([view.send_holding_line, view.show_hold_text]).toEqual([owed, shows]);
+
         const { govern, calls } = clientFor(view);
         const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient", patientRef: "p-1" });
         expect(reply.held).toBe(true);
-        expect(reply.sendHoldingLine).toBe(owed);
-        expect(reply.showHoldText).toBe(shows);
+        expect([reply.sendHoldingLine, reply.showHoldText]).toEqual([owed, shows]);
+        expect([reply.record!.sendHoldingLine, reply.record!.showHoldText]).toEqual([owed, shows]);
         expect(reply.text).toBe(shows ? HOLD : "");
         expect(reply.text).not.toContain("cures");
-        expect(reply.degraded).toBe(view === null);
+        // guard reports nothing itself: the caller records what it wrote.
+        await govern.flushReports();
+        expect(outcomeCalls(calls)).toHaveLength(0);
+      });
+    }
 
-        // The automatic report follows what was handed over: delivered with the
-        // hold text's hash when the patient saw it, not delivered otherwise.
-        await govern.flushPendingAcks();
-        const outcomes = outcomeCalls(calls);
-        if (view === null) {
-          expect(outcomes).toHaveLength(0);
-        } else {
-          expect(outcomes).toHaveLength(1);
-          if (shows) {
-            expect(outcomes[0]!.json).toMatchObject({ delivered: true, delivered_content_hash: await sha256Hex(HOLD) });
-          } else {
-            expect(outcomes[0]!.json).toMatchObject({ delivered: false });
-            expect(outcomes[0]!.json).not.toHaveProperty("delivered_content_hash");
-          }
-        }
+    it(`${channel}: an allow is untouched: neither flag, the draft as text`, async () => {
+      const view = decisionView({ channel, decision: "allow", send_holding_line: false });
+      expect(view.show_hold_text).toBe(false);
+      const { govern } = clientFor(view);
+      const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", channel, audience: "patient" });
+      expect([reply.sendHoldingLine, reply.showHoldText]).toEqual([false, false]);
+      expect(reply.text).toBe(DRAFT);
+    });
+
+    it(`${channel}: the API unreachable: no holding line, the hold text only in session`, async () => {
+      const { govern } = clientFor(null);
+      const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
+      expect(reply.degraded).toBe(true);
+      expect(reply.held).toBe(true);
+      expect([reply.sendHoldingLine, reply.showHoldText]).toEqual([false, inSession]);
+      expect(reply.text).toBe(inSession ? HOLD : "");
+    });
+  }
+});
+
+describe("guard: a server that predates show_hold_text gets the channel rule", () => {
+  // The same cells with the field absent. The channel rule reaches the API's
+  // pair on every row: it reads the review state as well, so a hold a
+  // reviewer has released or rejected shows nothing on any channel.
+  for (const [channel, inSession] of EVERY) {
+    for (const [name, row] of Object.entries(PATIENT_ROWS)) {
+      const [owed, shows] = row.api(inSession);
+      it(`${channel}: ${name}`, async () => {
+        const { govern } = clientFor(olderServer(row.view(channel)));
+        const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
+        expect([reply.sendHoldingLine, reply.showHoldText]).toEqual([owed, shows]);
+        expect(reply.record!.showHoldText).toBe(shows);
+        expect(reply.text).toBe(shows ? HOLD : "");
       });
     }
   }
+});
 
-  it("a replayed turn shows the hold text again in session, and nothing more on an outbound channel", async () => {
-    for (const channel of ALL) {
-      const { govern } = clientFor(HOLDS["a normal hold with send_holding_line true"]!(channel));
-      const ctx = { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" as const };
-      const first = await govern.guard(() => DRAFT, ctx);
-      const replay = await govern.guard(() => DRAFT, ctx);
-      expect(first.sendHoldingLine, channel).toBe(true);
-      expect(first.showHoldText, channel).toBe(true);
-      // The one-per-decision dedup is on the holding line only.
-      expect(replay.sendHoldingLine, channel).toBe(false);
-      expect(replay.showHoldText, channel).toBe(isInSessionChannel(channel));
-      expect(replay.text, channel).toBe(isInSessionChannel(channel) ? HOLD : "");
+describe("guard: the API's show_hold_text wins over the channel rule", () => {
+  it("false where the channel rule says true: a stopped turn whose retry was accepted", async () => {
+    // The one documented divergence: the stopped turn keeps send_holding_line
+    // and stops saying show, because the retry's own decision answers.
+    for (const [channel] of EVERY) {
+      const view = stopped(channel, { reasons: ["clinical_claim", "held_for_review"], review_state: null, send_holding_line: true, show_hold_text: false, retryable: false });
+      const local = await clientFor(olderServer(view)).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
+      expect(local.showHoldText, channel).toBe(true);
+
+      const reply = await clientFor(view).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
+      expect([reply.sendHoldingLine, reply.showHoldText], channel).toEqual([true, false]);
+      expect([reply.record!.sendHoldingLine, reply.record!.showHoldText], channel).toEqual([true, false]);
+      expect(reply.text, channel).toBe("");
     }
   });
 
-  it("ack() defaults to what was handed over", async () => {
-    for (const channel of ["web_chat", "sms"] as Channel[]) {
-      const { govern, calls } = clientFor(HOLDS["patient_state_unavailable"]!(channel));
-      const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
-      await reply.ack();
-      const outcome = outcomeCalls(calls)[0]!.json as Record<string, unknown>;
-      if (channel === "web_chat") {
-        expect(outcome).toMatchObject({ delivered: true, delivered_content_hash: await sha256Hex(HOLD) });
-      } else {
-        expect(outcome).toMatchObject({ delivered: false });
-        expect(outcome).not.toHaveProperty("delivered_content_hash");
+  it("true where the channel rule says false: a channel this version does not know, which the API knows to be in-session", async () => {
+    for (const reasons of [["opted_out"], ["gate_unavailable", "patient_state_unavailable"]]) {
+      const view = stopped(UNKNOWN, { decision: "block", reasons, policy: null, send_holding_line: false, show_hold_text: true });
+      const local = await clientFor(olderServer(view)).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel: UNKNOWN, audience: "patient" });
+      expect(local.showHoldText, reasons.join()).toBe(false);
+
+      const reply = await clientFor(view).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel: UNKNOWN, audience: "patient" });
+      expect([reply.sendHoldingLine, reply.showHoldText], reasons.join()).toEqual([false, true]);
+      expect(reply.text).toBe(HOLD);
+    }
+  });
+
+  it("on sms and email the hold text is the holding line: never shown where sendHoldingLine is false", async () => {
+    for (const channel of ["sms", "email"] as Channel[]) {
+      // A server that says show without a holding line, and one that offers a
+      // holding line to a patient who opted out: the SDK's own check of the
+      // contract says neither.
+      for (const overrides of [
+        { reasons: ["prohibited_claim"], review_state: "pending" as const, send_holding_line: false, show_hold_text: true },
+        { decision: "block" as const, reasons: ["opted_out"], send_holding_line: true, show_hold_text: true },
+      ]) {
+        const reply = await clientFor(stopped(channel, overrides)).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" });
+        expect([reply.sendHoldingLine, reply.showHoldText], channel).toEqual([false, false]);
+        expect(reply.text).toBe("");
       }
     }
   });
 
-  it("an allow is untouched on every channel: showHoldText false, text the draft", async () => {
-    for (const channel of ALL) {
-      const { govern } = clientFor(decisionView({ channel, decision: "allow" }));
-      const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", channel, audience: "patient" });
-      expect(reply.showHoldText).toBe(false);
+  it("is never read on an allow", async () => {
+    for (const [channel] of EVERY) {
+      const reply = await clientFor(decisionView({ channel, decision: "allow", show_hold_text: true })).govern.guard(() => DRAFT, { conversationId: "conv-1", channel, audience: "patient" });
+      expect(reply.showHoldText, channel).toBe(false);
+      expect(reply.record!.showHoldText, channel).toBe(false);
       expect(reply.text).toBe(DRAFT);
     }
   });
 });
 
-describe("guard: a clinician hold shows its notice on every channel", () => {
+describe("guard: a replayed turn", () => {
+  it("shows the hold text again in session, and nothing more on an outbound or unknown channel", async () => {
+    for (const [channel, inSession] of EVERY) {
+      for (const view of [PATIENT_ROWS["a normal hold, a holding line owed"]!.view(channel), olderServer(PATIENT_ROWS["a normal hold, a holding line owed"]!.view(channel))]) {
+        const { govern } = clientFor(view);
+        const ctx = { conversationId: "conv-1", turnId: "turn-1", channel, audience: "patient" as const };
+        const first = await govern.guard(() => DRAFT, ctx);
+        const replay = await govern.guard(() => DRAFT, ctx);
+        expect([first.sendHoldingLine, first.showHoldText], channel).toEqual([true, true]);
+        // The one-per-decision memory is the holding line's. In session the
+        // hold text is a reply, and the same reply again; elsewhere it is the
+        // holding line, withheld with it.
+        expect([replay.sendHoldingLine, replay.showHoldText], channel).toEqual([false, inSession]);
+        expect([replay.record!.sendHoldingLine, replay.record!.showHoldText], channel).toEqual([false, inSession]);
+        expect(replay.text, channel).toBe(inSession ? HOLD : "");
+      }
+    }
+  });
+
+  it("getDecision narrows Decision.showHoldText with the holding line", async () => {
+    for (const [channel, inSession] of EVERY) {
+      const { govern } = clientFor(PATIENT_ROWS["a normal hold, a holding line owed"]!.view(channel));
+      const first = await govern.getDecision(DECISION_ID);
+      const again = await govern.getDecision(DECISION_ID);
+      expect([first.sendHoldingLine, first.showHoldText], channel).toEqual([true, true]);
+      expect([again.sendHoldingLine, again.showHoldText], channel).toEqual([false, inSession]);
+    }
+  });
+});
+
+describe("guard: a clinician stop shows its notice on every channel", () => {
   // The channel rule is about contacting the patient; it does not apply to a
-  // clinician audience, and no holding line is ever owed to one.
-  const CLINICIAN_HOLDS = ["a normal hold with send_holding_line true", "the API unreachable"] as const;
+  // clinician audience, and no holding line is ever owed to one. `sms` and
+  // `voice` accept the patient audience only.
   for (const channel of ["email", "web_chat", "app_message", UNKNOWN] as Channel[]) {
-    for (const name of CLINICIAN_HOLDS) {
-      it(`${channel}: ${name} shows the hold text to a clinician`, async () => {
-        const built = HOLDS[name]!(channel);
-        const view = built === null ? null : { ...built, audience: "clinician" as const };
-        const { govern, calls } = clientFor(view);
+    const view = () => stopped(channel, { audience: "clinician", reasons: ["prohibited_claim", "held_for_review"], review_state: "pending", send_holding_line: false });
+    for (const [name, build] of [
+      ["the API's answer", () => view()],
+      ["a server that predates show_hold_text", () => olderServer(view())],
+      ["the API unreachable", () => null],
+    ] as const) {
+      it(`${channel}: ${name}`, async () => {
+        const built = build();
+        if (built) expect([built.send_holding_line, built.show_hold_text ?? true]).toEqual([false, true]);
+        const { govern } = clientFor(built);
         const reply = await govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel, audience: "clinician" });
         expect(reply.held).toBe(true);
-        expect(reply.sendHoldingLine).toBe(false);
-        expect(reply.showHoldText).toBe(true);
+        expect([reply.sendHoldingLine, reply.showHoldText]).toEqual([false, true]);
         expect(reply.text).toBe(HOLD);
-        expect(reply.degraded).toBe(view === null);
-
-        await govern.flushPendingAcks();
-        const outcomes = outcomeCalls(calls);
-        if (view === null) {
-          expect(outcomes).toHaveLength(0);
-        } else {
-          expect(outcomes).toHaveLength(1);
-          expect(outcomes[0]!.json).toMatchObject({ delivered: true, delivered_content_hash: await sha256Hex(HOLD) });
-        }
+        expect(reply.degraded).toBe(built === null);
       });
     }
   }
+
+  it("a clinician hold a reviewer released or rejected shows nothing, from the API or from the channel rule", async () => {
+    for (const review_state of ["released", "rejected"] as const) {
+      const view = stopped("web_chat", { audience: "clinician", reasons: ["prohibited_claim"], review_state });
+      for (const served of [view, olderServer(view)]) {
+        const reply = await clientFor(served).govern.guard(() => DRAFT, { conversationId: "conv-1", turnId: "turn-1", channel: "web_chat", audience: "clinician" });
+        expect([reply.sendHoldingLine, reply.showHoldText], review_state).toEqual([false, false]);
+        expect(reply.text).toBe("");
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -237,7 +347,7 @@ describe("the Vercel AI middleware follows the channel rule", () => {
     const shows = isInSessionChannel(channel);
 
     it(`wrapGenerate on ${channel}: ${shows ? "the hold text" : "no text"}, and an outcome to match`, async () => {
-      const { govern, calls } = clientFor(plainHold(channel));
+      const { govern, calls, waitForCall } = clientFor(plainHold(channel));
       const middleware = withGovern({ govern, channel, audience: "patient" });
       const result = await middleware.wrapGenerate!({
         doGenerate: async () => generateResult,
@@ -250,14 +360,12 @@ describe("the Vercel AI middleware follows the channel rule", () => {
       expect(textOfContent(result.content)).toBe(shows ? HOLD : "");
       if (!shows) expect(result.content).toHaveLength(0);
       expect(result.providerMetadata?.[PROVIDER_METADATA_KEY]).toMatchObject({ held: true, sendHoldingLine: false, showHoldText: shows });
-      await tick();
-      const outcome = outcomeCalls(calls)[0]!.json;
-      expect(outcome).toMatchObject({ delivered: shows });
-      if (!shows) expect(outcome).not.toHaveProperty("delivered_content_hash");
+      await waitForCall("outcome");
+      expect(outcomeCalls(calls)[0]!.json).toEqual(await handedOverReport(shows));
     });
 
     it(`wrapStream on ${channel}: ${shows ? "one hold text block" : "no text parts"}`, async () => {
-      const { govern, calls } = clientFor(plainHold(channel));
+      const { govern, calls, waitForCall } = clientFor(plainHold(channel));
       const middleware = withGovern({ govern, channel, audience: "patient" });
       const { stream } = await middleware.wrapStream!({
         doGenerate: async () => generateResult,
@@ -278,8 +386,8 @@ describe("the Vercel AI middleware follows the channel rule", () => {
       if (!shows) expect(parts.some((p) => p.type === "text-start" || p.type === "text-end")).toBe(false);
       const finish = parts.find((p) => p.type === "finish") as { providerMetadata?: Record<string, unknown> } | undefined;
       expect(finish?.providerMetadata?.[PROVIDER_METADATA_KEY]).toMatchObject({ showHoldText: shows });
-      await tick();
-      expect(outcomeCalls(calls)[0]!.json).toMatchObject({ delivered: shows });
+      await waitForCall("outcome");
+      expect(outcomeCalls(calls)[0]!.json).toEqual(await handedOverReport(shows));
     });
   }
 });
@@ -287,11 +395,11 @@ describe("the Vercel AI middleware follows the channel rule", () => {
 describe("the LangChain adapters follow the channel rule", () => {
   const model = RunnableLambda.from(async (_input: string) => new AIMessage(DRAFT));
 
-  for (const channel of ["web_chat", "voice"] as Channel[]) {
+  for (const channel of ["voice", "sms"] as Channel[]) {
     const shows = isInSessionChannel(channel);
 
     it(`governed on ${channel}: ${shows ? "the hold text" : "empty text"}, and an outcome to match`, async () => {
-      const { govern, calls } = clientFor(plainHold(channel));
+      const { govern, calls, waitForCall } = clientFor(plainHold(channel));
       const gated = governed(model, { govern, channel, audience: "patient", conversationId: "conv-1" });
       const out = await gated.invoke("hello");
       expect(out).toBeInstanceOf(AIMessage);
@@ -301,10 +409,8 @@ describe("the LangChain adapters follow the channel rule", () => {
         send_holding_line: false,
         show_hold_text: shows,
       });
-      await tick();
-      const outcome = outcomeCalls(calls)[0]!.json;
-      expect(outcome).toMatchObject({ delivered: shows });
-      if (!shows) expect(outcome).not.toHaveProperty("delivered_content_hash");
+      await waitForCall("outcome");
+      expect(outcomeCalls(calls)[0]!.json).toEqual(await handedOverReport(shows));
     });
 
     it(`the callback handler on ${channel} records the decision and renders no text of its own`, async () => {

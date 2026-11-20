@@ -309,16 +309,16 @@ describe("Govern.evaluate", () => {
 });
 
 describe("Govern.reportOutcome", () => {
-  it("sends the SHA-256 of the delivered text and never the text", async () => {
+  it("sends the SHA-256 of the released text and never the text", async () => {
     const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView({ outcome: null })));
     const govern = makeClient(fetch);
-    await govern.reportOutcome(DECISION_ID, { delivered: true, content: DRAFT, deliveredAt: "2026-09-16T00:00:05Z", deliveryRef: "SM123" });
+    await govern.reportOutcome(DECISION_ID, { kind: "released", content: DRAFT, at: "2026-09-16T00:00:05Z", deliveryRef: "SM123" });
     const call = calls[0]!;
     expect(call.url.pathname).toBe(`/api/v1/govern/decisions/${DECISION_ID}/outcome`);
     expect(call.json).toEqual({
-      delivered: true,
-      delivered_at: "2026-09-16T00:00:05Z",
-      delivered_content_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      kind: "released",
+      at: "2026-09-16T00:00:05Z",
+      content_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
       delivery_ref: "SM123",
     });
     expect(call.text).not.toContain(DRAFT);
@@ -328,45 +328,31 @@ describe("Govern.reportOutcome", () => {
   it("computes the documented hash (SHA-256 of UTF-8, lowercase hex)", async () => {
     const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView()));
     const govern = makeClient(fetch);
-    await govern.reportOutcome(DECISION_ID, { delivered: true, content: "abc" });
-    expect((calls[0]!.json as { delivered_content_hash: string }).delivered_content_hash).toBe(
+    await govern.reportOutcome(DECISION_ID, { kind: "delivered", at: new Date(), content: "abc" });
+    expect((calls[0]!.json as { content_hash: string }).content_hash).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
-  });
-
-  it("refuses delivered=true without content or a hash before any request", async () => {
-    const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView()));
-    const govern = makeClient(fetch);
-    await expect(govern.reportOutcome(DECISION_ID, { delivered: true })).rejects.toBeInstanceOf(GovernConfigError);
-    expect(calls).toHaveLength(0);
   });
 
   it("treats a blank contentHash as absent and hashes the content instead", async () => {
-    // "" is not undefined, so neither the fallback nor the delivered guard used
-    // to fire: a blank string went to the compliance record verbatim, and the
-    // record then said a message was delivered whose hash matches nothing.
+    // "" is not undefined, so neither the fallback nor the hash guard used to
+    // fire: a blank string went to the compliance record verbatim, and the
+    // record then said a message went out whose hash matches nothing.
     const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView()));
     const govern = makeClient(fetch);
-    await govern.reportOutcome(DECISION_ID, { delivered: true, contentHash: "   ", content: "abc" });
-    expect((calls[0]!.json as { delivered_content_hash: string }).delivered_content_hash).toBe(
+    await govern.reportOutcome(DECISION_ID, { kind: "released", at: new Date(), contentHash: "   ", content: "abc" });
+    expect((calls[0]!.json as { content_hash: string }).content_hash).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
   });
 
-  it("refuses delivered=true with a blank hash and no content, before any request", async () => {
+  it("refuses released with a blank hash and no content, before any request", async () => {
     const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView()));
     const govern = makeClient(fetch);
-    await expect(govern.reportOutcome(DECISION_ID, { delivered: true, contentHash: "" })).rejects.toBeInstanceOf(
+    await expect(govern.reportOutcome(DECISION_ID, { kind: "released", at: new Date(), contentHash: "" })).rejects.toBeInstanceOf(
       GovernConfigError,
     );
     expect(calls).toHaveLength(0);
-  });
-
-  it("allows delivered=false without a hash", async () => {
-    const { fetch, calls } = fetchMock(() => jsonResponse(201, decisionView()));
-    const govern = makeClient(fetch);
-    await govern.reportOutcome(DECISION_ID, { delivered: false });
-    expect(calls[0]!.json).toEqual({ delivered: false, delivered_at: expect.any(String) });
   });
 });
 
